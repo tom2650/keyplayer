@@ -1,4 +1,4 @@
-# MusicKeyPlayer
+# KeyPlayer
 
 一个基于 C++ 和 Direct2D 的轻量级 Windows 本地音频播放器。
 核心音频引擎采用 [Un4seen BASS Library](https://www.un4seen.com/)。
