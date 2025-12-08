@@ -1,6 +1,6 @@
 // ============================================================================
 // KeyPlayer - A lightweight C++ Audio Player
-// Version 1.0: 增加播放列表交互 (鼠标悬停高亮、点击播放)
+// Version 1.0.0: 增加播放列表交互 (鼠标悬停高亮、点击播放)
 // ============================================================================
 
 #define NOMINMAX 
@@ -897,7 +897,7 @@ void OpenAndPlayFile(const std::wstring& filePath) {
 
 void UpdateAppTitle(HWND hwnd) {
   int volVal = (int)(g_volume * 100 + 0.5f);
-  std::wstring title = g_isSimpleMode ? L"音量: " + std::to_wstring(volVal) + L"%" : L"Key Player - 音量: " + std::to_wstring(volVal) + L"%";
+  std::wstring title = g_isSimpleMode ? L"音量: " + std::to_wstring(volVal) + L"%" : L"KeyPlayer - 音量: " + std::to_wstring(volVal) + L"%";
   SetWindowTextW(hwnd, title.c_str());
 }
 
@@ -3868,7 +3868,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
   int physicalW = MulDiv(desiredLogicalW, dpiX, 96), physicalH = MulDiv(desiredLogicalH, dpiY, 96);
   RECT rc = { 0, 0, physicalW, physicalH }; AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
   int winW = rc.right - rc.left, winH = rc.bottom - rc.top; int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
-  g_hwnd = CreateWindowExW(0, L"D2D_A42_Wave", L"Key Player\u3000", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, (screenW - winW) / 2, (screenH - winH) / 2, winW, winH, nullptr, nullptr, hInstance, nullptr);
+  g_hwnd = CreateWindowExW(0, L"D2D_A42_Wave", L"KeyPlayer\u3000", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, (screenW - winW) / 2, (screenH - winH) / 2, winW, winH, nullptr, nullptr, hInstance, nullptr);
 
   ShowWindow(g_hwnd, nCmdShow); SetTimer(g_hwnd, IDT_TIMER_PLAYCHECK, 500, nullptr); SetTimer(g_hwnd, IDT_TIMER_UI, 16, nullptr);
   int argc = 0; LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
