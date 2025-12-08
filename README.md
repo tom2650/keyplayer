@@ -24,8 +24,8 @@
 
 1.  克隆仓库：
     ```bash
-    git clone https://github.com/你的用户名/仓库名.git
-    cd 仓库名
+    git clone https://github.com/tom2650/keyplayer.git
+    cd keyplayer
     ```
 
 2.  使用 Visual Studio 打开根目录下的 `player.sln`。
