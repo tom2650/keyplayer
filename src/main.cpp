@@ -192,6 +192,7 @@ ID2D1LinearGradientBrush* g_brushSpectrum = nullptr;
 
 IDWriteFactory* g_dwriteFactory = nullptr;
 IDWriteTextFormat* g_textFormat = nullptr;
+IDWriteTextFormat* g_textFormatIcon = nullptr; // [新增] 图标专用字体
 IDWriteTextFormat* g_textFormatCenter = nullptr;
 IDWriteTextFormat* g_textFormatLyric = nullptr;
 IDWriteTextFormat* g_textFormatSmall = nullptr;
@@ -286,10 +287,10 @@ bool g_blizzardInit = false;
 
 
 AppButton g_buttons[4] = {
-    { D2D1::RectF(20.0f,  260.0f, 70.0f,  285.0f), false, false, L"上一首", 1 },
-    { D2D1::RectF(80.0f,  260.0f, 130.0f, 285.0f), false, false, L"播放",   2 },
-    { D2D1::RectF(140.0f, 260.0f, 190.0f, 285.0f), false, false, L"下一首", 3 },
-    { D2D1::RectF(200.0f, 260.0f, 250.0f, 285.0f), false, false, L"设置",   4 }
+    { D2D1::RectF(20.0f,  260.0f, 70.0f,  285.0f), false, false, L"\uE892", 1 }, // 上一首图标
+    { D2D1::RectF(80.0f,  260.0f, 130.0f, 285.0f), false, false, L"\uE768", 2 }, // 播放图标
+    { D2D1::RectF(140.0f, 260.0f, 190.0f, 285.0f), false, false, L"\uE893", 3 }, // 下一首图标
+    { D2D1::RectF(200.0f, 260.0f, 250.0f, 285.0f), false, false, L"\uE713", 4 }  // 设置图标
 };
 
 std::wstring g_mainTextStr =
@@ -388,7 +389,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
           if (g_playlist.empty()) return 0;
           if (g_playMode == PM_SINGLE_LOOP) PlayTrackByIndex(g_currentIndex);
           else if (g_playMode == PM_LIST_LOOP) { int next = g_currentIndex + 1; if (next >= (int)g_playlist.size()) next = 0; PlayTrackByIndex(next); }
-          else { int next = g_currentIndex + 1; if (next < (int)g_playlist.size()) PlayTrackByIndex(next); else { g_isPlaying = false; g_buttons[1].text = L"播放"; BASS_ChannelSetPosition(g_stream, 0, BASS_POS_BYTE); InvalidateRect(hwnd, nullptr, FALSE); } }
+          else { int next = g_currentIndex + 1; if (next < (int)g_playlist.size()) PlayTrackByIndex(next); else { g_isPlaying = false; g_buttons[1].text = L"\uE768"; BASS_ChannelSetPosition(g_stream, 0, BASS_POS_BYTE); InvalidateRect(hwnd, nullptr, FALSE); } }
         }
       }
     }
@@ -463,7 +464,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
   }
   case WM_KEYDOWN:
   {
-    if (wParam == VK_SPACE) { TogglePlayback(); g_buttons[1].text = g_isPlaying ? L"暂停" : L"播放"; InvalidateRect(hwnd, nullptr, FALSE); }
+    if (wParam == VK_SPACE) { TogglePlayback(); g_buttons[1].text = g_isPlaying ? L"\uE769" : L"\uE768"; InvalidateRect(hwnd, nullptr, FALSE); }
     else if (wParam == VK_LEFT) { if (!g_playlist.empty()) { int idx = g_currentIndex - 1; if (idx < 0) idx = (int)g_playlist.size() - 1; PlayTrackByIndex(idx, true); } }
     else if (wParam == VK_RIGHT) { if (!g_playlist.empty()) { int idx = g_currentIndex + 1; if (idx >= (int)g_playlist.size()) idx = 0; PlayTrackByIndex(idx, true); } }
     else if (wParam == VK_UP) { g_volume += 0.05f; if (g_volume > 1.0f) g_volume = 1.0f; if (g_stream) BASS_ChannelSetAttribute(g_stream, BASS_ATTRIB_VOL, g_volume); UpdateAppTitle(hwnd); }
@@ -567,7 +568,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         btn.isDown = false; ReleaseCapture();
         if (IsPointInRect(ptDip, btn.rect)) {
           if (btn.id == 1 && !g_playlist.empty()) { int idx = g_currentIndex - 1; if (idx < 0) idx = (int)g_playlist.size() - 1; PlayTrackByIndex(idx); }
-          else if (btn.id == 2) { TogglePlayback(); btn.text = g_isPlaying ? L"暂停" : L"播放"; }
+          else if (btn.id == 2) { TogglePlayback(); btn.text = g_isPlaying ? L"\uE769" : L"\uE768"; }
           else if (btn.id == 3 && !g_playlist.empty()) { int idx = g_currentIndex + 1; if (idx >= (int)g_playlist.size()) idx = 0; PlayTrackByIndex(idx); }
           else if (btn.id == 4) {
             HMENU hMenu = CreatePopupMenu();
@@ -685,7 +686,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
   case WM_DESTROY:
     DiscardGraphicsResources();
     SafeRelease(&g_d2dFactory); SafeRelease(&g_dwriteFactory);
-    SafeRelease(&g_textFormat); SafeRelease(&g_textFormatCenter); SafeRelease(&g_textFormatSmall); SafeRelease(&g_textFormatLyric);
+    SafeRelease(&g_textFormat); SafeRelease(&g_textFormatIcon); SafeRelease(&g_textFormatCenter); SafeRelease(&g_textFormatSmall); SafeRelease(&g_textFormatLyric);
     SafeRelease(&g_wicFactory); SafeRelease(&g_brushHighlight); SafeRelease(&g_brushDim); SafeRelease(&g_brushSpectrum);
     if (g_stream) BASS_StreamFree(g_stream); if (g_hFlacPlugin) BASS_PluginFree(g_hFlacPlugin); BASS_Free();
     PostQuitMessage(0); return 0;
@@ -848,11 +849,11 @@ void PlayTrackByIndex(int index, bool startPlaying) {
     if (startPlaying) {
       BASS_ChannelPlay(g_stream, FALSE);
       g_isPlaying = true;
-      g_buttons[1].text = L"暂停";
+      g_buttons[1].text = L"\uE769";
     }
     else {
       g_isPlaying = false;
-      g_buttons[1].text = L"播放";
+      g_buttons[1].text = L"\uE768";
     }
 
     // --- 最小化时，跳过所有图形/界面操作 ---
@@ -891,7 +892,7 @@ void PlayTrackByIndex(int index, bool startPlaying) {
   else {
     // 播放失败处理
     g_isPlaying = false;
-    g_buttons[1].text = L"播放";
+    g_buttons[1].text = L"\uE768";
     // 最小化时不弹窗，否则会阻塞线程
     if (!g_isMinimized) MessageBoxW(g_hwnd, L"无法播放该文件", L"错误", MB_OK);
   }
@@ -965,9 +966,95 @@ void OnPaint()
 
   D2D1_COLOR_F colWinBg = g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::Black) : D2D1::ColorF(D2D1::ColorF::White);
   D2D1_COLOR_F colBoxBg = g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::Black) : D2D1::ColorF(D2D1::ColorF::White);
-  D2D1_COLOR_F colText = g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::Gray) : D2D1::ColorF(D2D1::ColorF::Gray);
+  D2D1_COLOR_F colText = g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::Gray) : D2D1::ColorF(D2D1::ColorF::DimGray);
 
   g_renderTarget->Clear(colWinBg);
+
+  // --- 浅色主题下的模糊背景 ---
+  if (!g_isDarkMode && g_bitmap && g_renderTarget) {
+
+    // 【关键点 1】分辨率降级：从 40 改为 12
+    // 12x12 的分辨率足以提取主色调，但又低到足以抹平所有文字和细节
+    // 如果你觉得颜色过渡还是有点硬，可以改为 8.0f；如果觉得颜色太单调，改为 16.0f
+    D2D1_SIZE_F tinySize = D2D1::SizeF(12.0f, 12.0f);
+
+    ID2D1BitmapRenderTarget* pTinyRT = nullptr;
+    HRESULT hr = g_renderTarget->CreateCompatibleRenderTarget(tinySize, &pTinyRT);
+
+    if (SUCCEEDED(hr) && pTinyRT) {
+      pTinyRT->BeginDraw();
+      pTinyRT->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+      // 抓取整个原图
+      D2D1_SIZE_F bmpSize = g_bitmap->GetSize();
+      D2D1_RECT_F sourceRect = D2D1::RectF(0, 0, bmpSize.width, bmpSize.height);
+      D2D1_RECT_F destRect = D2D1::RectF(0, 0, tinySize.width, tinySize.height);
+
+      // 压缩绘制
+      pTinyRT->DrawBitmap(g_bitmap, destRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &sourceRect);
+
+      pTinyRT->EndDraw();
+
+      ID2D1Bitmap* pBlurBitmap = nullptr;
+      hr = pTinyRT->GetBitmap(&pBlurBitmap);
+
+      if (SUCCEEDED(hr) && pBlurBitmap) {
+        D2D1_SIZE_F targetSize = g_renderTarget->GetSize();
+
+        // 【关键点 2】强力放大裁剪 (Super Zoom)
+        // 放大 1.5 倍 (150%)。
+        // 作用：把边缘那些可能带有“线性拉伸痕迹”的部分推到屏幕外面去，
+        // 只保留中间最柔和、色彩融合最好的部分。
+        float zoom = 1.5f;
+
+        float w = targetSize.width * zoom;
+        float h = targetSize.height * zoom;
+        float x = (targetSize.width - w) / 2.0f;
+        float y = (targetSize.height - h) / 2.0f;
+
+        D2D1_RECT_F bgRect = D2D1::RectF(x, y, x + w, y + h);
+
+        // 拉伸铺满
+        g_renderTarget->DrawBitmap(pBlurBitmap, bgRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+
+        // 渐变蒙版 (保持不变，这是高级感的来源)
+        ID2D1LinearGradientBrush* pGradientBrush = nullptr;
+        D2D1_GRADIENT_STOP stops[2];
+
+        // 顶部：0.4f (稍微让颜色透出来多一点，因为背景现在很柔和了)
+        stops[0].position = 0.0f;
+        stops[0].color = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.4f);
+
+        // 底部：0.95f (保持文字清晰)
+        stops[1].position = 1.0f;
+        stops[1].color = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f);
+
+        ID2D1GradientStopCollection* pStopCollection = nullptr;
+        hr = g_renderTarget->CreateGradientStopCollection(stops, 2, &pStopCollection);
+
+        if (SUCCEEDED(hr)) {
+          hr = g_renderTarget->CreateLinearGradientBrush(
+            D2D1::LinearGradientBrushProperties(
+              D2D1::Point2F(0, 0),
+              D2D1::Point2F(0, targetSize.height)
+            ),
+            pStopCollection,
+            &pGradientBrush
+          );
+
+          if (SUCCEEDED(hr)) {
+            D2D1_RECT_F fullScreen = D2D1::RectF(0, 0, targetSize.width, targetSize.height);
+            g_renderTarget->FillRectangle(fullScreen, pGradientBrush);
+            pGradientBrush->Release();
+          }
+          pStopCollection->Release();
+        }
+        pBlurBitmap->Release();
+      }
+      pTinyRT->Release();
+    }
+  }
+  // -------------------------
 
   if (g_brush && g_textFormat) {
     // 1. 封面/频谱区域
@@ -3766,19 +3853,22 @@ void OnPaint()
 
       // --- 文字颜色 ---
       g_brush->SetColor(g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::DarkGray) : D2D1::ColorF(D2D1::ColorF::White));
-      g_renderTarget->DrawTextW(btn.text, (UINT32)wcslen(btn.text), g_textFormatCenter, btn.rect, g_brush);
+      g_renderTarget->DrawTextW(btn.text, (UINT32)wcslen(btn.text), g_textFormatIcon, btn.rect, g_brush);
     }
 
     // 4. 进度条
     if (!g_isSimpleMode && g_textFormatSmall) {
-      g_brush->SetColor(g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::DarkGray) : D2D1::ColorF(D2D1::ColorF::LightGray));
+      D2D1_COLOR_F trackCol = g_isDarkMode ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.1f);
+      g_brush->SetColor(trackCol);
+      //g_brush->SetColor(g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::DarkGray) : D2D1::ColorF(D2D1::ColorF::LightGray));
       g_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(g_progressBarRect, 6.0f, 6.0f), g_brush);
       double tot = 0, cur = 0; float r = 0;
       if (g_stream) { tot = BASS_ChannelBytes2Seconds(g_stream, BASS_ChannelGetLength(g_stream, BASS_POS_BYTE)); cur = g_musicTime; if (tot > 0.001) r = (float)(cur / tot); if (r > 1) r = 1; }
       if (r > 0) {
         D2D1_RECT_F clipRect = g_progressBarRect; clipRect.right = clipRect.left + (clipRect.right - clipRect.left) * r;
         g_renderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        g_brush->SetColor(g_isDarkMode ? D2D1::ColorF(0xB03060) : D2D1::ColorF(0xFF6699));
+        // 0xB03060  Gray:(0x808080)
+        g_brush->SetColor(g_isDarkMode ? D2D1::ColorF(0x808080) : D2D1::ColorF(0xFF6699));
         g_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(g_progressBarRect, 6.0f, 6.0f), g_brush);
         g_renderTarget->PopAxisAlignedClip();
       }
@@ -3884,6 +3974,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
   hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&g_dwriteFactory);
   hr = g_dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"zh-cn", &g_textFormat);
   if (SUCCEEDED(hr)) { g_textFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); IDWriteInlineObject* pEllipsis = nullptr; g_dwriteFactory->CreateEllipsisTrimmingSign(g_textFormat, &pEllipsis); DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 }; g_textFormat->SetTrimming(&trimming, pEllipsis); SafeRelease(&pEllipsis); }
+  hr = g_dwriteFactory->CreateTextFormat(L"Segoe MDL2 Assets", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"zh-cn", &g_textFormatIcon);
+  if (SUCCEEDED(hr)) { g_textFormatIcon->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER); g_textFormatIcon->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER); }
   hr = g_dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"zh-cn", &g_textFormatCenter);
   if (SUCCEEDED(hr)) { g_textFormatCenter->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER); g_textFormatCenter->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER); }
   hr = g_dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"zh-cn", &g_textFormatLyric);
@@ -3916,7 +4008,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
   }
   if (argv) LocalFree(argv);
   MSG msg = {}; while (GetMessageW(&msg, nullptr, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
-  SafeRelease(&g_wicFactory); SafeRelease(&g_textFormatCenter); SafeRelease(&g_textFormat); SafeRelease(&g_textFormatSmall); SafeRelease(&g_textFormatLyric);
+  SafeRelease(&g_wicFactory); SafeRelease(&g_textFormatCenter); SafeRelease(&g_textFormat); SafeRelease(&g_textFormatIcon); SafeRelease(&g_textFormatSmall); SafeRelease(&g_textFormatLyric);
   SafeRelease(&g_dwriteFactory); SafeRelease(&g_d2dFactory); SafeRelease(&g_brushHighlight); SafeRelease(&g_brushDim); SafeRelease(&g_brushSpectrum);
   if (g_stream) BASS_StreamFree(g_stream); if (g_hFlacPlugin) BASS_PluginFree(g_hFlacPlugin); BASS_Free(); CoUninitialize();
   if (hMutex) CloseHandle(hMutex); timeEndPeriod(1); return 0;
