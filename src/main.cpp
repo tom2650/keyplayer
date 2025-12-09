@@ -4,7 +4,7 @@
 // ============================================================================
 
 #define NOMINMAX 
-#define _CRT_SECURE_NO_WARNINGS 
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <windows.h>
 #include <windowsx.h>
@@ -24,6 +24,7 @@
 #include <chrono>
 #include <iomanip>
 #include <imm.h>
+#include <dwmapi.h>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -32,6 +33,17 @@
 #pragma comment(lib, "bass.lib")
 #pragma comment(lib, "winmm.lib") 
 #pragma comment(lib, "imm32.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
+#endif
 
 #include "bass.h"
 #include "resource.h"
@@ -309,6 +321,7 @@ std::wstring GetTruncatedString(const std::wstring& text, int limitWeight);
 void LoadAndParseLyrics(const std::wstring& audioPath);
 void OpenAndPlayFile(const std::wstring& filePath);
 void UpdateAppTitle(HWND hwnd);
+void UpdateTitleBarTheme(HWND hwnd);
 int CountLines(const std::wstring& text, float maxWidth, IDWriteTextFormat* pFormat, IDWriteFactory* pFactory);
 
 // ============================================================================
@@ -322,6 +335,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
   {
     HIMC hImc = ImmGetContext(hwnd);
     if (hImc) { ImmAssociateContext(hwnd, NULL); ImmReleaseContext(hwnd, hImc); }
+    UpdateTitleBarTheme(hwnd);
     return 0;
   }
   case WM_DPICHANGED:
@@ -442,7 +456,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case IDM_SET_SPECTRUM_BLIZZARD: g_spectrumMode = SPEC_BLIZZARD; g_blizzardInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_SPECTRUM_WINDOW: g_spectrumMode = SPEC_WINDOW; g_blizzardInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
 
-    case IDM_SET_THEME: g_isDarkMode = !g_isDarkMode; InvalidateRect(hwnd, nullptr, FALSE); break;
+    case IDM_SET_THEME: g_isDarkMode = !g_isDarkMode; UpdateTitleBarTheme(hwnd); InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_LYRICS: g_showLyrics = !g_showLyrics; if (g_showLyrics) { if (!g_currentFilePath.empty()) LoadAndParseLyrics(g_currentFilePath); else { g_lyricsData.clear(); g_lyricsDisplayStr = L"暂无正在播放的歌曲"; } } InvalidateRect(hwnd, nullptr, FALSE); break;
     }
     return 0;
@@ -899,6 +913,23 @@ void UpdateAppTitle(HWND hwnd) {
   int volVal = (int)(g_volume * 100 + 0.5f);
   std::wstring title = g_isSimpleMode ? L"音量: " + std::to_wstring(volVal) + L"%" : L"KeyPlayer - 音量: " + std::to_wstring(volVal) + L"%";
   SetWindowTextW(hwnd, title.c_str());
+}
+
+void UpdateTitleBarTheme(HWND hwnd) {
+  // 1. 启用系统自带的“沉浸式深色模式” (Win10 1809+ / Win11)
+  // 这会自动把标题栏变成深色，文字变成白色
+  BOOL useDarkMode = g_isDarkMode ? TRUE : FALSE;
+  DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
+  // 2. 强制指定标题栏背景色 (仅 Win11 有效，Win10 会忽略此调用)
+  // 如果是深色模式 -> 设为纯黑 (0x00000000)
+  // 如果是浅色模式 -> 设为白色 (0x00FFFFFF)   系统默认色 (0xFFFFFFFF)
+  COLORREF color = g_isDarkMode ? 0x00000000 : 0xFFFFFFFF;
+  DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &color, sizeof(color));
+
+  // 3. 强制重绘非客户区 (标题栏)，确保颜色立即更新
+  SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
 
 void TogglePlayback() {
@@ -3727,11 +3758,11 @@ void OnPaint()
       g_renderTarget->FillRoundedRectangle(rBtn, g_brush);
 
       // --- 边框颜色 ---
-      // 逻辑：深色模式透明 -> 浅色模式白色
-      D2D1_COLOR_F borderCol = g_isDarkMode ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f) : D2D1::ColorF(D2D1::ColorF::White);
+      // 逻辑：深色模式透明 -> 浅色模式 白色 White  或 D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f)
+      D2D1_COLOR_F borderCol = g_isDarkMode ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f);
 
       g_brush->SetColor(borderCol);
-      g_renderTarget->DrawRoundedRectangle(rBtn, g_brush, 1.0f);
+      g_renderTarget->DrawRoundedRectangle(rBtn, g_brush, 0.8f);
 
       // --- 文字颜色 ---
       g_brush->SetColor(g_isDarkMode ? D2D1::ColorF(D2D1::ColorF::DarkGray) : D2D1::ColorF(D2D1::ColorF::White));
