@@ -1,6 +1,6 @@
 // ============================================================================
 // KeyPlayer - A lightweight C++ Audio Player
-// Version 1.0.0: 增加播放列表交互 (鼠标悬停高亮、点击播放)
+// Version 1.0.3: 更新UI
 // ============================================================================
 
 #define NOMINMAX 
@@ -26,6 +26,10 @@
 #include <imm.h>
 #include <dwmapi.h>
 
+#include "bass.h"
+#include "resource.h"
+
+// 链接库指令
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
@@ -39,56 +43,57 @@
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 #ifndef DWMWA_CAPTION_COLOR
-#define DWMWA_CAPTION_COLOR 35
+#define DWMWA_CAPTION_COLOR           35
 #endif
 #ifndef DWMWA_TEXT_COLOR
-#define DWMWA_TEXT_COLOR 36
+#define DWMWA_TEXT_COLOR              36
 #endif
 
-#include "bass.h"
-#include "resource.h"
-
 // 菜单 ID
-#define IDM_SET_PLAYLIST      1001 
-#define IDM_SET_LYRICS        1004 
-#define IDM_SET_SIMPLEMODE    1005 
-#define IDM_SET_THEME         1006 
+#define IDM_SET_PLAYLIST              1001 
+#define IDM_SET_LYRICS                1004 
+#define IDM_SET_SIMPLEMODE            1005 
+#define IDM_SET_THEME                 1006 
 
-#define IDM_MODE_ORDER        2001 
-#define IDM_MODE_LISTLOOP     2002 
-#define IDM_MODE_SINGLELOOP   2003 
+#define IDM_MODE_ORDER                2001 
+#define IDM_MODE_LISTLOOP             2002 
+#define IDM_MODE_SINGLELOOP           2003 
 
-#define IDM_SET_COVER              3000
-#define IDM_SET_SPECTRUM_BAR       3001 
-#define IDM_SET_SPECTRUM_CIRC      3002 
-#define IDM_SET_SPECTRUM_WAVE      3003
-#define IDM_SET_SPECTRUM_BUBBLE    3004  
-#define IDM_SET_SPECTRUM_GALAXY    3005  
-#define IDM_SET_SPECTRUM_RADIAL    3006  
-#define IDM_SET_SPECTRUM_BLOCKS    3007  
-#define IDM_SET_SPECTRUM_FIRE      3008    
-#define IDM_SET_SPECTRUM_CITY      3009    
-#define IDM_SET_SPECTRUM_RIPPLE    3010  
-#define IDM_SET_SPECTRUM_PIXEL     3011  
-#define IDM_SET_SPECTRUM_LED       3012  
-#define IDM_SET_SPECTRUM_RAIN      3013  
-#define IDM_SET_SPECTRUM_NET       3014
-#define IDM_SET_SPECTRUM_GRAVITY   3015
-#define IDM_SET_SPECTRUM_SYNTHWAVE 3016
-#define IDM_SET_SPECTRUM_SYMBIOTE  3017
-#define IDM_SET_SPECTRUM_VINYL     3018
-#define IDM_SET_SPECTRUM_SPIRAL    3019
-#define IDM_SET_SPECTRUM_WARP      3020
-#define IDM_SET_SPECTRUM_PLANET    3021
-#define IDM_SET_SPECTRUM_GRIND     3022
-#define IDM_SET_SPECTRUM_BLIZZARD  3023
-#define IDM_SET_SPECTRUM_WINDOW    3024
-#define IDM_SET_SPECTRUM_SPHERE    3025
+#define IDM_SET_COVER                 3000
+#define IDM_SET_SPECTRUM_BAR          3001 
+#define IDM_SET_SPECTRUM_CIRC         3002 
+#define IDM_SET_SPECTRUM_WAVE         3003
+#define IDM_SET_SPECTRUM_BUBBLE       3004  
+#define IDM_SET_SPECTRUM_GALAXY       3005  
+#define IDM_SET_SPECTRUM_RADIAL       3006  
+#define IDM_SET_SPECTRUM_BLOCKS       3007  
+#define IDM_SET_SPECTRUM_FIRE         3008    
+#define IDM_SET_SPECTRUM_CITY         3009    
+#define IDM_SET_SPECTRUM_RIPPLE       3010  
+#define IDM_SET_SPECTRUM_PIXEL        3011  
+#define IDM_SET_SPECTRUM_LED          3012  
+#define IDM_SET_SPECTRUM_RAIN         3013  
+#define IDM_SET_SPECTRUM_NET          3014
+#define IDM_SET_SPECTRUM_GRAVITY      3015
+#define IDM_SET_SPECTRUM_SYNTHWAVE    3016
+#define IDM_SET_SPECTRUM_SYMBIOTE     3017
+#define IDM_SET_SPECTRUM_VINYL        3018
+#define IDM_SET_SPECTRUM_SPIRAL       3019
+#define IDM_SET_SPECTRUM_WARP         3020
+#define IDM_SET_SPECTRUM_PLANET       3021
+#define IDM_SET_SPECTRUM_GRIND        3022
+#define IDM_SET_SPECTRUM_BLIZZARD     3023
+#define IDM_SET_SPECTRUM_WINDOW       3024
+#define IDM_SET_SPECTRUM_SPHERE       3025
 
-#define IDT_TIMER_PLAYCHECK 1 
-#define IDT_TIMER_UI        2 
+#define IDT_TIMER_PLAYCHECK           1 
+#define IDT_TIMER_UI                  2
 
+// ============================================================================
+// 类型定义（数据结构）
+// ============================================================================
 enum PlayMode { PM_ORDER = 0, PM_LIST_LOOP, PM_SINGLE_LOOP };
+
 enum SpectrumMode {
   SPEC_NONE = 0, SPEC_BAR = 1, SPEC_CIRCLE = 2, SPEC_WAVE = 3,
   SPEC_BUBBLE = 4, SPEC_GALAXY = 5, SPEC_RADIAL = 6, SPEC_BLOCKS = 7,
@@ -101,14 +106,52 @@ enum SpectrumMode {
 
 struct LyricEntry {
   double time;
-  std::wstring text;  // 原文
-  std::wstring trans; // 译文
-  // 缓存该行歌词的显示高度 (40, 60, 或 80)
-  float displayHeight = 40.0f;
-  // 缓存原文占几行，译文占几行
-  int origLines = 1;
+  std::wstring text;   // 原文
+  std::wstring trans;  // 译文
+  float displayHeight = 40.0f; // 缓存该行歌词的显示高度 (40, 60, 80)
+  int origLines = 1;   // 缓存原文占几行，译文占几行
   int transLines = 0;
 };
+
+struct AppButton {
+  D2D1_RECT_F rect;    // 按钮的绘制区域 (坐标位置和大小，用于绘制和鼠标碰撞检测)
+  bool isDown;         // 交互状态：按钮是否被“按下” (用于绘制深色点击效果)
+  bool isHover;        // 交互状态：鼠标是否“悬停”在上方 (用于绘制高亮效果)
+  const wchar_t* text; // 按钮显示的文本 (本项目中实际存储的是图标的 Unicode 字符，如 L"\uE768")
+  int id;              // 按钮的唯一标识符 (用于在点击事件中区分是哪个功能，如 1=上一首, 2=播放)
+};
+
+// 频谱特效结构体定义
+// --- 绚丽气泡结构体 ---
+struct Bubble { float x, y, radius, speed, alpha; D2D1_COLOR_F color; };
+// --- 星际粒子结构体 ---
+struct StarParticle { float x, y, vx, vy, size, alpha; D2D1_COLOR_F color; };
+// --- 幻彩涟漪结构体 ---
+struct RippleRing { float radius, thickness, hue, alpha, speed; };
+// --- 霓虹细雨结构体 ---
+struct RainDrop { int type; float x, y; float vy; float width; float height; float maxLife; float life; D2D1_COLOR_F color; };
+// --- 繁星之网结构体 ---
+struct NetParticle { float x, y, vx, vy, baseSize; };
+// --- 引力奇点结构体 ---
+struct GravParticle { float x, y; float vx, vy; float hue; float mass; };
+// --- 液态生物结构体 ---
+struct VenomParticle { float x, y; float vx, vy; float life; float size; D2D1_COLOR_F color; };
+// --- 激光唱针结构体 ---
+struct VinylParticle { float angle; float dist; float size; float alpha; D2D1_COLOR_F color; };
+// --- 时空螺旋结构体 ---
+struct SpiralNode { float intensity; float hue; };
+// --- 光速隧道结构体 ---
+struct WarpFrame { float z; float fft[32]; D2D1_COLOR_F color; };
+// --- 行星系统结构体 ---
+struct Planet { float angle; float distance; float speed; float size; D2D1_COLOR_F color; std::vector<D2D1_POINT_2F> trail; };
+// --- 宿命之环结构体 ---
+struct AccelParticle { float x, y; float vx, vy; float life; float size; D2D1_COLOR_F color; };
+// --- 虚空磨盘结构体 ---
+struct GrindSpark { float x, y; float vx, vy; float life; D2D1_COLOR_F color; };
+// --- 极地风暴结构体 ---
+struct BlizzardParticle { float x, y; float vx, vy; float z; float life; };
+// --- 网点球体结构体 ---
+struct Star3D { float x, y, z; float baseRadius; bool isExploding; float vx, vy, vz; float size; D2D1_COLOR_F color; };
 
 // ============================================================================
 // 辅助工具类
@@ -193,7 +236,7 @@ ID2D1LinearGradientBrush* g_brushSpectrum = nullptr;
 
 IDWriteFactory* g_dwriteFactory = nullptr;
 IDWriteTextFormat* g_textFormat = nullptr;
-IDWriteTextFormat* g_textFormatIcon = nullptr; // [新增] 图标专用字体
+IDWriteTextFormat* g_textFormatIcon = nullptr; // 图标专用字体
 IDWriteTextFormat* g_textFormatCenter = nullptr;
 IDWriteTextFormat* g_textFormatLyric = nullptr;
 IDWriteTextFormat* g_textFormatSmall = nullptr;
@@ -207,7 +250,7 @@ D2D1_RECT_F g_progressBarRect = D2D1::RectF(270.0f, 263.0f, 500.0f, 282.0f);
 
 float g_scrollOffset = 0.0f;
 float g_textTotalHeight = 0.0f;
-float g_headerHeight = 0.0f;         // 头部信息的高度
+float g_headerHeight = 0.0f;          // 头部信息的高度
 const float LIST_ITEM_HEIGHT = 22.0f; // 列表每行的高度
 std::chrono::steady_clock::time_point g_lastSysTime;
 double g_smoothTime = 0.0;
@@ -216,7 +259,7 @@ bool  g_isPlaying = false;
 bool  g_isSimpleMode = false;
 bool  g_isDarkMode = false;
 bool  g_showLyrics = false;
-bool  g_isMinimized = false;  // 小化停止绘制
+bool  g_isMinimized = false;          // 最小化停止绘制
 
 int   g_spectrumMode = SPEC_NONE;
 
@@ -237,78 +280,6 @@ double                   g_musicTime = 0.0;
 #define SPEC_BARS 64
 float g_fftPeaks[SPEC_BARS] = { 0.0f };
 
-struct AppButton { D2D1_RECT_F rect; bool isDown; bool isHover; const wchar_t* text; int id; };
-
-// 频谱特效结构体
-// --- 绚丽气泡结构体 ---
-struct Bubble { float x, y, radius, speed, alpha; D2D1_COLOR_F color; };
-std::vector<Bubble> g_bubbles;
-// --- 星际粒子结构体 ---
-struct StarParticle { float x, y, vx, vy, size, alpha; D2D1_COLOR_F color; };
-std::vector<StarParticle> g_stars;
-// --- 幻彩涟漪结构体 ---
-struct RippleRing { float radius, thickness, hue, alpha, speed; };
-std::vector<RippleRing> g_ripples; DWORD g_lastRippleTime = 0;
-// --- 霓虹细雨结构体 ---
-struct RainDrop { int type; float x, y; float vy; float width; float height; float maxLife; float life; D2D1_COLOR_F color; };
-std::vector<RainDrop> g_rainDrops;
-// --- 繁星之网结构体 ---
-struct NetParticle { float x, y, vx, vy, baseSize; };
-std::vector<NetParticle> g_particles;
-// --- 引力奇点结构体 ---
-struct GravParticle { float x, y; float vx, vy; float hue; float mass; };
-const int GRAV_PARTICLE_COUNT = 800;
-std::vector<GravParticle> g_gravParticles;
-bool g_gravInit = false;
-// --- 激光唱针结构体 ---
-struct VinylParticle { float angle; float dist; float size; float alpha; D2D1_COLOR_F color; };
-std::vector<VinylParticle> g_vinylParticles;
-float g_vinylRotation = 0.0f;
-// --- 时空螺旋结构体 ---
-struct SpiralNode { float intensity; float hue; };
-std::vector<SpiralNode> g_spiralHistory;
-double g_lastSpiralTime = -1.0;
-// --- 光速隧道结构体 ---
-struct WarpFrame { float z; float fft[32]; D2D1_COLOR_F color; };
-std::vector<WarpFrame> g_warpTunnel;
-bool g_warpInit = false;
-// --- 行星系统结构体 ---
-struct Planet { float angle; float distance; float speed; float size; D2D1_COLOR_F color; std::vector<D2D1_POINT_2F> trail; };
-std::vector<Planet> g_planets;
-bool g_planetInit = false;
-// --- 宿命之环结构体 ---
-struct AccelParticle { float x, y; float vx, vy; float life; float size; D2D1_COLOR_F color; };
-std::vector<AccelParticle> g_accelParticles;
-float g_circleRotation = 0.0f;
-// --- 虚空磨盘结构体 ---
-struct GrindSpark { float x, y; float vx, vy; float life; D2D1_COLOR_F color; };
-std::vector<GrindSpark> g_grindSparks;
-float g_innerAngle = 0.0f;
-float g_outerAngle = 0.0f;
-// --- 极地风暴结构体 ---
-struct BlizzardParticle { float x, y; float vx, vy; float z; float life; };
-const int BLIZZARD_COUNT = 600;
-std::vector<BlizzardParticle> g_snowParticles;
-bool g_blizzardInit = false;
-// --- 网点球体结构体 ---
-struct Star3D { float x, y, z; float baseRadius; bool isExploding; float vx, vy, vz; float size; D2D1_COLOR_F color; };
-std::vector<Star3D> g_stars3D;
-bool g_star3DInit = false;
-float g_sphereRotationY = 0.0f;
-float g_sphereRotationX = 0.0f;
-float g_sphereHue = 0.0f;
-// --- 【毒液特效专用】 ---
-struct VenomParticle {
-  float x, y;
-  float vx, vy;
-  float life;      // 寿命 1.0 -> 0.0
-  float size;
-  D2D1_COLOR_F color;
-};
-std::vector<VenomParticle> g_venomParticles;
-
-// --------------------------------------------------------------------------------------------
-
 AppButton g_buttons[4] = {
     { D2D1::RectF(20.0f,  260.0f, 70.0f,  285.0f), false, false, L"\uE892", 1 }, // 上一首图标
     { D2D1::RectF(80.0f,  260.0f, 130.0f, 285.0f), false, false, L"\uE768", 2 }, // 播放图标
@@ -328,16 +299,63 @@ L"T - 主题    Space - 播放\n"
 L"Arrows - 控制";
 const wchar_t* g_currentText = g_mainTextStr.c_str();
 
+// 频谱特效变量
+// --- 绚丽气泡 ---
+std::vector<Bubble> g_bubbles;
+// --- 星际粒子 ---
+std::vector<StarParticle> g_stars;
+// --- 幻彩涟漪 ---
+std::vector<RippleRing> g_ripples; DWORD g_lastRippleTime = 0;
+// --- 霓虹细雨 ---
+std::vector<RainDrop> g_rainDrops;
+// --- 繁星之网 ---
+std::vector<NetParticle> g_particles;
+// --- 引力奇点 ---
+const int GRAV_PARTICLE_COUNT = 800;
+std::vector<GravParticle> g_gravParticles;
+bool g_gravInit = false;
+// --- 液态生物 ---
+std::vector<VenomParticle> g_venomParticles;
+// --- 激光唱针 ---
+std::vector<VinylParticle> g_vinylParticles;
+float g_vinylRotation = 0.0f;
+// --- 时空螺旋 ---
+std::vector<SpiralNode> g_spiralHistory;
+double g_lastSpiralTime = -1.0;
+// --- 光速隧道 ---
+std::vector<WarpFrame> g_warpTunnel;
+bool g_warpInit = false;
+// --- 行星系统 ---
+std::vector<Planet> g_planets;
+bool g_planetInit = false;
+// --- 宿命之环 ---
+std::vector<AccelParticle> g_accelParticles;
+float g_circleRotation = 0.0f;
+// --- 虚空磨盘 ---
+std::vector<GrindSpark> g_grindSparks;
+float g_innerAngle = 0.0f;
+float g_outerAngle = 0.0f;
+// --- 极地风暴 ---
+const int BLIZZARD_COUNT = 600;
+std::vector<BlizzardParticle> g_snowParticles;
+bool g_blizzardInit = false;
+// --- 网点球体 ---
+std::vector<Star3D> g_stars3D;
+bool g_star3DInit = false;
+float g_sphereRotationY = 0.0f;
+float g_sphereRotationX = 0.0f;
+float g_sphereHue = 0.0f;
+
 // ============================================================================
 // 函数声明
 // ============================================================================
 HRESULT CreateGraphicsResources();
-void    DiscardGraphicsResources();
-void    OnPaint();
-void    OnResize(UINT width, UINT height);
+void DiscardGraphicsResources();
+void OnPaint();
+void OnResize(UINT width, UINT height);
 HRESULT LoadBitmapFromFile(ID2D1RenderTarget* pRT, IWICImagingFactory* pWIC, PCWSTR uri, ID2D1Bitmap** ppBitmap);
 std::wstring OpenFolderDialog(HWND hwnd);
-void ScanFolderForAudio(const std::wstring& folderPath);
+bool ScanFolderForAudio(const std::wstring& folderPath);
 HRESULT LoadAlbumArtFromAudio(ID2D1RenderTarget* pRT, IWICImagingFactory* pWIC, PCWSTR filePath, ID2D1Bitmap** ppBitmap);
 void TogglePlayback();
 void PlayTrackByIndex(int index, bool startPlaying = true);
@@ -375,7 +393,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
   {
     if (wParam == SIZE_MINIMIZED) {
       g_isMinimized = true;
-      // 这里的 KillTimer(IDT_TIMER_UI) 可以保留，省电
       KillTimer(hwnd, IDT_TIMER_UI);
     }
     else {
@@ -384,21 +401,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_isMinimized = false;
         SetTimer(hwnd, IDT_TIMER_UI, 16, nullptr);
 
-        // 恢复显示时，如果正在播放但没封面，重新加载一下资源 ---
-        // 简单粗暴的方法：强制刷新一次 PlayTrackByIndex 的视觉部分
-        // 但为了不打断音乐，只手动触发一次重绘，或者在这里重新加载封面
-        // 最简单的补救：直接调用 PlayTrackByIndex(..., false) 会重置音乐，不行。
+        // ==================== [修复开始] ====================
+        // 强制同步 UI 状态（因为最小化期间可能发生了切歌，但跳过了 UI 更新）
+        if (!g_currentFilePath.empty()) {
 
-        // 正确做法：直接刷新重绘，OnPaint 里会处理一部分
-        // 如果想完美，可以在这里判断 g_bitmap 是否为空，为空则重新加载
-        if (g_renderTarget && !g_bitmap && !g_currentFilePath.empty()) {
-          LoadAlbumArtFromAudio(g_renderTarget, g_wicFactory, g_currentFilePath.c_str(), &g_bitmap);
-          if (!g_bitmap) LoadBitmapFromFile(g_renderTarget, g_wicFactory, L"cover.png", &g_bitmap);
+          // 1. 无论旧图片是否存在，先释放，因为可能已经过时了
+          SafeRelease(&g_bitmap);
 
-          // 同时也得更新一下文字，防止文字没变
-          std::wstring fileName = g_currentFilePath.substr(g_currentFilePath.find_last_of(L"\\") + 1);
-          g_mainTextStr = L"正在播放 (" + std::to_wstring(g_currentIndex + 1) + L"/" + std::to_wstring(g_playlist.size()) + L"):\n" + fileName + L"\n\n播放列表";
+          // 2. 确保渲染目标存在
+          if (!g_renderTarget) CreateGraphicsResources();
+
+          if (g_renderTarget) {
+            // 3. 重新加载当前歌曲的封面
+            HRESULT hr = LoadAlbumArtFromAudio(g_renderTarget, g_wicFactory, g_currentFilePath.c_str(), &g_bitmap);
+            if (FAILED(hr) || !g_bitmap) {
+              LoadBitmapFromFile(g_renderTarget, g_wicFactory, L"cover.png", &g_bitmap);
+            }
+
+            // 4. 同时也必须强制更新文本信息（歌名等）
+            std::wstring fileName = g_currentFilePath.substr(g_currentFilePath.find_last_of(L"\\") + 1);
+            g_mainTextStr = L"正在播放 (" + std::to_wstring(g_currentIndex + 1) + L"/" + std::to_wstring(g_playlist.size()) + L"):\n" + fileName + L"\n\n播放列表";
+
+            // 如果当前显示的是主文本，需要更新指针
+            if (!g_showLyrics && !g_playlist.empty()) {
+              g_currentText = g_mainTextStr.c_str();
+            }
+          }
         }
+        // ==================== [修复结束] ====================
       }
       OnResize(LOWORD(lParam), HIWORD(lParam));
     }
@@ -433,12 +463,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case IDM_SET_PLAYLIST: {
       std::wstring folder = OpenFolderDialog(hwnd);
       if (!folder.empty()) {
-        ScanFolderForAudio(folder);
-        if (!g_playlist.empty()) { g_currentIndex = 0; PlayTrackByIndex(0, false); }
-        else {
-          SafeRelease(&g_bitmap); LoadBitmapFromFile(g_renderTarget, g_wicFactory, L"cover.png", &g_bitmap);
-          g_mainTextStr = L"目录为空或无音频文件：\n" + folder; g_currentText = g_mainTextStr.c_str(); InvalidateRect(hwnd, nullptr, FALSE);
+        // 修改点：接收返回值
+        if (ScanFolderForAudio(folder)) {
+          // 只有返回 true (加载成功) 才切歌
+          if (!g_playlist.empty()) {
+            g_currentIndex = 0;
+            PlayTrackByIndex(0, false);
+          }
+          else {
+            // 目录虽然没超限，但是是空的（没有音乐文件）
+            SafeRelease(&g_bitmap);
+            LoadBitmapFromFile(g_renderTarget, g_wicFactory, L"cover.png", &g_bitmap);
+            g_mainTextStr = L"目录为空或无音频文件：\n" + folder;
+            g_currentText = g_mainTextStr.c_str();
+            InvalidateRect(hwnd, nullptr, FALSE);
+          }
         }
+        // 如果 ScanFolderForAudio 返回 false，它自己已经弹窗了，这里什么都不用做
+        // 原有的歌单也不会被清空，用户可以继续听之前的歌
       }
     } break;
     case IDM_MODE_ORDER: g_playMode = PM_ORDER; break;
@@ -636,8 +678,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AddSpecItem(IDM_SET_SPECTRUM_BLIZZARD, L"极地风暴");
             AddSpecItem(IDM_SET_SPECTRUM_WINDOW, L"静谧雪窗");
             AddSpecItem(IDM_SET_SPECTRUM_SPHERE, L"网点球体");
-
+            int checkedSpecId = IDM_SET_COVER + g_spectrumMode;
+            CheckMenuRadioItem(hSubMenuSpec, IDM_SET_COVER, IDM_SET_SPECTRUM_SPHERE, checkedSpecId, MF_BYCOMMAND);
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hSubMenuSpec, L"视觉效果");
+
             AppendMenuW(hMenu, MF_STRING, IDM_SET_LYRICS, g_showLyrics ? L"显示列表" : L"显示歌词");
             AppendMenuW(hMenu, MF_STRING, IDM_SET_SIMPLEMODE, g_isSimpleMode ? L"标准视图" : L"极简视图");
             AppendMenuW(hMenu, MF_STRING, IDM_SET_THEME, g_isDarkMode ? L"浅色主题" : L"深色主题");
@@ -826,23 +870,74 @@ void LoadAndParseLyrics(const std::wstring& audioPath) {
   std::sort(g_lyricsData.begin(), g_lyricsData.end(), [](const LyricEntry& a, const LyricEntry& b) { return a.time < b.time; });
 }
 
-void ScanFolderForAudio(const std::wstring& folderPath) {
-  g_playlist.clear(); g_currentIndex = -1;
-  std::wstring searchPath = folderPath + L"\\*.*"; WIN32_FIND_DATAW findData; HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
-  if (hFind == INVALID_HANDLE_VALUE) return;
+bool ScanFolderForAudio(const std::wstring& folderPath) {
+  // 1. 使用临时列表，避免在扫描一半失败时污染原来的播放列表
+  std::vector<std::wstring> tempPlaylist;
+
+  std::wstring searchPath = folderPath + L"\\*.*";
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
+
+  if (hFind == INVALID_HANDLE_VALUE) return false;
+
   do {
     if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-      std::wstring fileName = findData.cFileName; std::wstring lowerName = fileName; std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), towlower);
-      if ((lowerName.length() >= 4 && lowerName.substr(lowerName.length() - 4) == L".mp3") || (lowerName.length() >= 4 && lowerName.substr(lowerName.length() - 4) == L".wav") ||
-        (lowerName.length() >= 4 && lowerName.substr(lowerName.length() - 4) == L".ogg") || (lowerName.length() >= 4 && lowerName.substr(lowerName.length() - 4) == L".m4a") ||
-        (lowerName.length() >= 4 && lowerName.substr(lowerName.length() - 4) == L".aac") || (lowerName.length() >= 5 && lowerName.substr(lowerName.length() - 5) == L".flac"))
+      const wchar_t* fileName = findData.cFileName;
+      // 获取文件名长度
+      size_t len = wcslen(fileName);
+      if (len < 4) continue;
+
+      // 获取后缀名位置
+      const wchar_t* ext = PathFindExtensionW(fileName);
+
+      // 简单的后缀判断 (不区分大小写)
+      if (ext && (
+        _wcsicmp(ext, L".mp3") == 0 ||
+        _wcsicmp(ext, L".wav") == 0 ||
+        _wcsicmp(ext, L".ogg") == 0 ||
+        _wcsicmp(ext, L".m4a") == 0 ||
+        _wcsicmp(ext, L".aac") == 0 ||
+        _wcsicmp(ext, L".flac") == 0))
       {
-        g_playlist.push_back(folderPath + L"\\" + fileName);
+        // === 核心逻辑：数量检查 ===
+        if (tempPlaylist.size() >= 999) {
+          FindClose(hFind); // 别忘了关闭句柄
+
+          // 弹出警告
+          MessageBoxW(g_hwnd,
+            L"该目录包含的音频文件超过 999 首！\n为了保持极简流畅体验，请选择文件较少的目录。",
+            L"歌单过大",
+            MB_ICONWARNING | MB_OK);
+
+          return false; // 返回失败，保留原有歌单不动
+        }
+
+        tempPlaylist.push_back(folderPath + L"\\" + fileName);
       }
     }
-  } while (FindNextFileW(hFind, &findData)); FindClose(hFind);
-  std::sort(g_playlist.begin(), g_playlist.end(), [](const std::wstring& a, const std::wstring& b) { return StrCmpLogicalW(a.c_str(), b.c_str()) < 0; });
-  if (!g_playlist.empty()) { wchar_t iniPath[MAX_PATH]; GetModuleFileNameW(NULL, iniPath, MAX_PATH); PathRemoveFileSpecW(iniPath); PathAppendW(iniPath, L"config.ini"); WritePrivateProfileStringW(L"Settings", L"LastFolder", folderPath.c_str(), iniPath); }
+  } while (FindNextFileW(hFind, &findData));
+
+  FindClose(hFind);
+
+  // 2. 如果代码走到这里，说明数量合规，正式更新全局列表
+  g_playlist = tempPlaylist;
+  g_currentIndex = -1; // 重置索引
+
+  // 排序
+  std::sort(g_playlist.begin(), g_playlist.end(), [](const std::wstring& a, const std::wstring& b) {
+    return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
+    });
+
+  // 保存路径到配置
+  if (!g_playlist.empty()) {
+    wchar_t iniPath[MAX_PATH];
+    GetModuleFileNameW(NULL, iniPath, MAX_PATH);
+    PathRemoveFileSpecW(iniPath);
+    PathAppendW(iniPath, L"config.ini");
+    WritePrivateProfileStringW(L"Settings", L"LastFolder", folderPath.c_str(), iniPath);
+  }
+
+  return true; // 成功
 }
 
 std::wstring GetTruncatedString(const std::wstring& text, int limitWeight) {
@@ -856,15 +951,31 @@ std::wstring GetTruncatedString(const std::wstring& text, int limitWeight) {
 }
 
 void PlayTrackByIndex(int index, bool startPlaying) {
-  if (g_playlist.empty() || index < 0 || index >= (int)g_playlist.size()) return;
+  if (g_playlist.empty()) return;
+
+  // 越界检查
+  if (index < 0) index = (int)g_playlist.size() - 1;
+  if (index >= (int)g_playlist.size()) index = 0;
+
+  // 防止无限递归的守卫变量
+  // 如果整个列表的歌都坏了，我们不能无限循环下去，试完一圈就得停
+  static int errorRetryCount = 0;
+
   g_currentIndex = index;
 
-  // 1. 释放旧音频，加载新音频 (这部分必须执行)
+  // 1. 释放旧资源
   if (g_stream) BASS_StreamFree(g_stream);
+
+  // 2. 尝试加载新音频
   g_currentFilePath = g_playlist[index];
+
+  // BASS_STREAM_AUTOFREE: 播放完自动释放（可选，这里先不加，保持手动控制）
   g_stream = BASS_StreamCreateFile(FALSE, g_currentFilePath.c_str(), 0, 0, BASS_UNICODE);
 
   if (g_stream) {
+    // === 成功分支 ===
+    errorRetryCount = 0; // 成功播放，重置错误计数器
+
     BASS_ChannelSetAttribute(g_stream, BASS_ATTRIB_VOL, g_volume);
 
     // 重置时间变量
@@ -872,33 +983,22 @@ void PlayTrackByIndex(int index, bool startPlaying) {
     g_smoothTime = 0.0;
     g_lastSysTime = std::chrono::steady_clock::now();
 
-    if (startPlaying) {
-      BASS_ChannelPlay(g_stream, FALSE);
-      g_isPlaying = true;
-      g_buttons[1].text = L"\uE769";
-    }
-    else {
-      g_isPlaying = false;
-      g_buttons[1].text = L"\uE768";
-    }
-
-    // --- 最小化时，跳过所有图形/界面操作 ---
+    // 只有显卡资源存在时，才去加载封面 (防止最小化时无意义的加载)
     if (!g_isMinimized) {
       SafeRelease(&g_bitmap);
       if (!g_renderTarget) CreateGraphicsResources();
-
-      // 只有显卡资源存在时，才去加载封面
       if (g_renderTarget) {
         HRESULT hr = LoadAlbumArtFromAudio(g_renderTarget, g_wicFactory, g_currentFilePath.c_str(), &g_bitmap);
         if (FAILED(hr) || !g_bitmap) LoadBitmapFromFile(g_renderTarget, g_wicFactory, L"cover.png", &g_bitmap);
       }
 
-      // 界面文字更新
+      // 更新文本
       std::wstring fileName = g_currentFilePath.substr(g_currentFilePath.find_last_of(L"\\") + 1);
       g_mainTextStr = L"正在播放 (" + std::to_wstring(index + 1) + L"/" + std::to_wstring(g_playlist.size()) + L"):\n" + fileName + L"\n\n播放列表";
-      g_currentText = g_mainTextStr.c_str();
+      // 如果没开歌词，强制更新当前文本指针
+      if (!g_showLyrics) g_currentText = g_mainTextStr.c_str();
 
-      // 滚动条定位
+      // 滚动条跟随
       if (!g_showLyrics) {
         float listStart = g_headerHeight;
         float targetY = listStart + index * LIST_ITEM_HEIGHT;
@@ -909,22 +1009,61 @@ void PlayTrackByIndex(int index, bool startPlaying) {
         }
       }
     }
-    // -----------------------------------------------------
 
-    // 歌词解析不费资源，可以保留，或者也放到 if(!g_isMinimized) 里
+    // 加载歌词
     if (g_showLyrics) LoadAndParseLyrics(g_currentFilePath);
 
+    // 播放控制
+    if (startPlaying) {
+      BASS_ChannelPlay(g_stream, FALSE);
+      g_isPlaying = true;
+      g_buttons[1].text = L"\uE769"; // 暂停图标
+    }
+    else {
+      g_isPlaying = false;
+      g_buttons[1].text = L"\uE768"; // 播放图标
+    }
+
+    // 触发重绘
+    if (!g_isMinimized) InvalidateRect(g_hwnd, nullptr, FALSE);
   }
   else {
-    // 播放失败处理
-    g_isPlaying = false;
-    g_buttons[1].text = L"\uE768";
-    // 最小化时不弹窗，否则会阻塞线程
-    if (!g_isMinimized) MessageBoxW(g_hwnd, L"无法播放该文件", L"错误", MB_OK);
-  }
+    // === 失败分支：静默跳过 ===
 
-  // 最小化时不重绘
-  if (!g_isMinimized) InvalidateRect(g_hwnd, nullptr, FALSE);
+    // 只有在“尝试播放”模式下才自动跳过。如果是暂停状态切歌失败，就不跳了，免得用户一脸懵逼。
+    if (startPlaying) {
+      // 如果重试次数还没超过列表总数 (防止死循环)
+      if (errorRetryCount < (int)g_playlist.size()) {
+        errorRetryCount++;
+
+        // 递归调用下一首
+        // 这里我们简单地 +1，不管播放模式是什么，为了尽快找到一首能响的歌
+        int nextIndex = index + 1;
+
+        // 输出调试信息（可选，为了你自己调试方便）
+        OutputDebugStringW((L"[KeyPlayer] Load Failed: " + g_currentFilePath + L" -> Trying Next...\n").c_str());
+
+        PlayTrackByIndex(nextIndex, true);
+      }
+      else {
+        // 所有的歌都试过了，全都不行
+        errorRetryCount = 0;
+        g_isPlaying = false;
+        g_buttons[1].text = L"\uE768";
+        g_mainTextStr = L"播放失败：列表内所有文件均无法播放";
+        g_currentText = g_mainTextStr.c_str();
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+      }
+    }
+    else {
+      // 只是暂停状态下切到了坏歌，显示错误但不自动跳
+      g_isPlaying = false;
+      g_buttons[1].text = L"\uE768";
+      g_mainTextStr = L"无法加载文件:\n" + g_currentFilePath;
+      g_currentText = g_mainTextStr.c_str();
+      InvalidateRect(g_hwnd, nullptr, FALSE);
+    }
+  }
 }
 
 void OpenAndPlayFile(const std::wstring& filePath) {
@@ -1089,7 +1228,7 @@ void OnPaint()
       g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
       if (g_isPlaying && g_stream) {
         float fft[2048]; BASS_ChannelGetData(g_stream, fft, BASS_DATA_FFT2048);
-        // ... (此处频谱绘制代码，完全保持原样即可) ...
+        // ... (此处频谱绘制代码，完全保持原样即可) ... 9527
         // --- 经典长条 (SPEC_BAR) ---
         if (g_spectrumMode == SPEC_BAR) {
           // 物理下落系统 (保持不变)
@@ -4522,9 +4661,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     if (!g_playlist.empty()) PlayTrackByIndex(targetIndex, true);
   }
   else {
-    wchar_t iniPath[MAX_PATH]; GetModuleFileNameW(NULL, iniPath, MAX_PATH); PathRemoveFileSpecW(iniPath); PathAppendW(iniPath, L"config.ini");
-    wchar_t lastFolder[MAX_PATH] = { 0 }; GetPrivateProfileStringW(L"Settings", L"LastFolder", L"", lastFolder, MAX_PATH, iniPath);
-    if (wcslen(lastFolder) > 0 && PathFileExistsW(lastFolder)) { ScanFolderForAudio(lastFolder); if (!g_playlist.empty()) PlayTrackByIndex(0, false); }
+    wchar_t iniPath[MAX_PATH];
+    GetModuleFileNameW(NULL, iniPath, MAX_PATH);
+    PathRemoveFileSpecW(iniPath);
+    PathAppendW(iniPath, L"config.ini");
+
+    wchar_t lastFolder[MAX_PATH] = { 0 };
+    GetPrivateProfileStringW(L"Settings", L"LastFolder", L"", lastFolder, MAX_PATH, iniPath);
+
+    if (wcslen(lastFolder) > 0 && PathFileExistsW(lastFolder)) {
+      // 同样进行检查，如果上次的目录现在超过999了，就不加载，避免启动卡死
+      if (ScanFolderForAudio(lastFolder)) {
+        if (!g_playlist.empty()) PlayTrackByIndex(0, false);
+      }
+    }
   }
   if (argv) LocalFree(argv);
   MSG msg = {}; while (GetMessageW(&msg, nullptr, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
