@@ -25,6 +25,8 @@
 #include <iomanip>
 #include <imm.h>
 #include <dwmapi.h>
+#include <random>   // 新增：用于随机数生成
+#include <numeric>  // 新增：用于 std::iota 生成序列
 
 #include "bass.h"
 #include "resource.h"
@@ -50,29 +52,30 @@
 #endif
 
 // 菜单 ID
-#define IDM_SET_PLAYLIST              1001 
-#define IDM_SET_LYRICS                1004 
-#define IDM_SET_SIMPLEMODE            1005 
-#define IDM_SET_THEME                 1006 
+#define IDM_SET_PLAYLIST              1001
+#define IDM_SET_LYRICS                1004
+#define IDM_SET_SIMPLEMODE            1005
+#define IDM_SET_THEME                 1006
 
-#define IDM_MODE_ORDER                2001 
-#define IDM_MODE_LISTLOOP             2002 
-#define IDM_MODE_SINGLELOOP           2003 
+#define IDM_MODE_ORDER                2001
+#define IDM_MODE_LISTLOOP             2002
+#define IDM_MODE_SINGLELOOP           2003
+#define IDM_MODE_SHUFFLE              2004  // 新增：随机播放 ID
 
 #define IDM_SET_COVER                 3000
-#define IDM_SET_SPECTRUM_BAR          3001 
-#define IDM_SET_SPECTRUM_CIRC         3002 
+#define IDM_SET_SPECTRUM_BAR          3001
+#define IDM_SET_SPECTRUM_CIRC         3002
 #define IDM_SET_SPECTRUM_WAVE         3003
-#define IDM_SET_SPECTRUM_BUBBLE       3004  
-#define IDM_SET_SPECTRUM_GALAXY       3005  
-#define IDM_SET_SPECTRUM_RADIAL       3006  
-#define IDM_SET_SPECTRUM_BLOCKS       3007  
-#define IDM_SET_SPECTRUM_FIRE         3008    
-#define IDM_SET_SPECTRUM_CITY         3009    
-#define IDM_SET_SPECTRUM_RIPPLE       3010  
-#define IDM_SET_SPECTRUM_PIXEL        3011  
-#define IDM_SET_SPECTRUM_LED          3012  
-#define IDM_SET_SPECTRUM_RAIN         3013  
+#define IDM_SET_SPECTRUM_BUBBLE       3004
+#define IDM_SET_SPECTRUM_GALAXY       3005
+#define IDM_SET_SPECTRUM_RADIAL       3006
+#define IDM_SET_SPECTRUM_BLOCKS       3007
+#define IDM_SET_SPECTRUM_FIRE         3008
+#define IDM_SET_SPECTRUM_CITY         3009
+#define IDM_SET_SPECTRUM_RIPPLE       3010
+#define IDM_SET_SPECTRUM_PIXEL        3011
+#define IDM_SET_SPECTRUM_LED          3012
+#define IDM_SET_SPECTRUM_RAIN         3013
 #define IDM_SET_SPECTRUM_NET          3014
 #define IDM_SET_SPECTRUM_GRAVITY      3015
 #define IDM_SET_SPECTRUM_SYNTHWAVE    3016
@@ -92,7 +95,7 @@
 // ============================================================================
 // 类型定义（数据结构）
 // ============================================================================
-enum PlayMode { PM_ORDER = 0, PM_LIST_LOOP, PM_SINGLE_LOOP };
+enum PlayMode { PM_ORDER = 0, PM_LIST_LOOP, PM_SINGLE_LOOP, PM_SHUFFLE };
 
 enum SpectrumMode {
   SPEC_NONE = 0, SPEC_BAR = 1, SPEC_CIRCLE = 2, SPEC_WAVE = 3,
@@ -255,21 +258,23 @@ const float LIST_ITEM_HEIGHT = 22.0f; // 列表每行的高度
 std::chrono::steady_clock::time_point g_lastSysTime;
 double g_smoothTime = 0.0;
 
-bool  g_isPlaying = false;
-bool  g_isSimpleMode = false;
-bool  g_isDarkMode = false;
-bool  g_showLyrics = false;
-bool  g_isMinimized = false;          // 最小化停止绘制
+bool g_isPlaying = false;
+bool g_isSimpleMode = false;
+bool g_isDarkMode = false;
+bool g_showLyrics = false;
+bool g_isMinimized = false;          // 最小化停止绘制
 
 int   g_spectrumMode = SPEC_NONE;
 
-HSTREAM                  g_stream = 0;
-HPLUGIN                  g_hFlacPlugin = 0;
+HSTREAM g_stream = 0;
+HPLUGIN g_hFlacPlugin = 0;
 std::vector<std::wstring> g_playlist;
-int                      g_currentIndex = -1;
-int                      g_hoverIndex = -1; // 鼠标悬停的歌曲索引
-float                    g_volume = 0.2f;
-int                      g_playMode = PM_ORDER;
+int g_currentIndex = -1;
+int g_hoverIndex = -1; // 鼠标悬停的歌曲索引
+float g_volume = 0.2f;
+int g_playMode = PM_ORDER;
+std::vector<int> g_shuffleList; // 真正的“洗牌后”的索引列表
+int g_shufflePos = -1;          // 当前播放到洗牌列表的第几个 (比如 0, 1, 2...)
 
 std::wstring             g_currentFilePath = L"";
 
@@ -358,6 +363,7 @@ std::wstring OpenFolderDialog(HWND hwnd);
 bool ScanFolderForAudio(const std::wstring& folderPath);
 HRESULT LoadAlbumArtFromAudio(ID2D1RenderTarget* pRT, IWICImagingFactory* pWIC, PCWSTR filePath, ID2D1Bitmap** ppBitmap);
 void TogglePlayback();
+void UpdateShuffleList(int targetIndex);
 void PlayTrackByIndex(int index, bool startPlaying = true);
 std::wstring GetTruncatedString(const std::wstring& text, int limitWeight);
 void LoadAndParseLyrics(const std::wstring& audioPath);
@@ -440,9 +446,38 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
       if (g_stream && g_isPlaying) {
         if (BASS_ChannelIsActive(g_stream) == BASS_ACTIVE_STOPPED) {
           if (g_playlist.empty()) return 0;
-          if (g_playMode == PM_SINGLE_LOOP) PlayTrackByIndex(g_currentIndex);
-          else if (g_playMode == PM_LIST_LOOP) { int next = g_currentIndex + 1; if (next >= (int)g_playlist.size()) next = 0; PlayTrackByIndex(next); }
-          else { int next = g_currentIndex + 1; if (next < (int)g_playlist.size()) PlayTrackByIndex(next); else { g_isPlaying = false; g_buttons[1].text = L"\uE768"; BASS_ChannelSetPosition(g_stream, 0, BASS_POS_BYTE); InvalidateRect(hwnd, nullptr, FALSE); } }
+
+          // [新增/修改] 核心播放逻辑
+          if (g_playMode == PM_SINGLE_LOOP) {
+            PlayTrackByIndex(g_currentIndex);
+          }
+          else if (g_playMode == PM_SHUFFLE) {
+            // 随机模式：移动洗牌指针
+            if (!g_shuffleList.empty()) {
+              g_shufflePos++;
+              // 随机模式默认包含“列表循环”的特性，播完一轮自动重来
+              if (g_shufflePos >= (int)g_shuffleList.size()) g_shufflePos = 0;
+
+              int realIndex = g_shuffleList[g_shufflePos];
+              PlayTrackByIndex(realIndex);
+            }
+          }
+          else if (g_playMode == PM_LIST_LOOP) {
+            int next = g_currentIndex + 1;
+            if (next >= (int)g_playlist.size()) next = 0;
+            PlayTrackByIndex(next);
+          }
+          else { // PM_ORDER (顺序播放，播完停止)
+            int next = g_currentIndex + 1;
+            if (next < (int)g_playlist.size())
+              PlayTrackByIndex(next);
+            else {
+              g_isPlaying = false;
+              g_buttons[1].text = L"\uE768";
+              BASS_ChannelSetPosition(g_stream, 0, BASS_POS_BYTE);
+              InvalidateRect(hwnd, nullptr, FALSE);
+            }
+          }
         }
       }
     }
@@ -486,6 +521,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case IDM_MODE_ORDER: g_playMode = PM_ORDER; break;
     case IDM_MODE_LISTLOOP: g_playMode = PM_LIST_LOOP; break;
     case IDM_MODE_SINGLELOOP: g_playMode = PM_SINGLE_LOOP; break;
+    case IDM_MODE_SHUFFLE:
+      g_playMode = PM_SHUFFLE;
+      UpdateShuffleList(g_currentIndex); // 立即生成洗牌列表
+      break;
     case IDM_SET_SIMPLEMODE: {
       g_isSimpleMode = !g_isSimpleMode;
       int newLogicalW = g_isSimpleMode ? 270 : 520; int newLogicalH = 305;
@@ -528,11 +567,118 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     return 0;
   }
+  case WM_DROPFILES:
+  {
+    HDROP hDrop = (HDROP)wParam;
+
+    // 获取拖入的文件数量 (虽然我们只处理第一个，但为了严谨)
+    UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+
+    if (fileCount > 0) {
+      wchar_t path[MAX_PATH];
+      // 获取第一个拖入文件的路径
+      DragQueryFileW(hDrop, 0, path, MAX_PATH);
+
+      std::wstring targetPath = path;
+      std::wstring folderToLoad = L"";
+      std::wstring fileToPlay = L""; // 如果拖入的是文件，记录它以便立即播放
+
+      // 判断是文件还是文件夹
+      if (PathIsDirectoryW(targetPath.c_str())) {
+        // 情况 A: 拖入的是文件夹
+        folderToLoad = targetPath;
+      }
+      else {
+        // 情况 B: 拖入的是文件
+        // 获取它的父目录作为加载目标
+        wchar_t folderBuf[MAX_PATH];
+        wcscpy_s(folderBuf, targetPath.c_str());
+        PathRemoveFileSpecW(folderBuf); // 剥离文件名，只留目录
+        folderToLoad = folderBuf;
+        fileToPlay = targetPath;        // 记住用户具体拖了哪个文件
+      }
+
+      // 执行扫描 (利用之前写的带数量限制的函数)
+      // ScanFolderForAudio 会自动更新 g_playlist
+      if (ScanFolderForAudio(folderToLoad)) {
+
+        // 如果加载成功且有歌
+        if (!g_playlist.empty()) {
+          int playIndex = 0;
+
+          // 如果用户拖的是具体某个文件，我们要找到它在列表里的位置
+          if (!fileToPlay.empty()) {
+            for (int i = 0; i < (int)g_playlist.size(); i++) {
+              if (g_playlist[i] == fileToPlay) {
+                playIndex = i;
+                break;
+              }
+            }
+          }
+
+          // === 关键逻辑：重置播放状态 ===
+
+          // 1. 如果是随机模式，需要以这首歌为起点，重新生成洗牌列表
+          if (g_playMode == PM_SHUFFLE) {
+            UpdateShuffleList(playIndex);
+          }
+
+          // 2. 播放
+          PlayTrackByIndex(playIndex, true);
+        }
+        else {
+          // 目录是空的
+          SafeRelease(&g_bitmap);
+          LoadBitmapFromFile(g_renderTarget, g_wicFactory, L"cover.png", &g_bitmap);
+          g_mainTextStr = L"该文件夹没有音频文件";
+          g_currentText = g_mainTextStr.c_str();
+          InvalidateRect(hwnd, nullptr, FALSE);
+        }
+      }
+      // 如果 ScanFolderForAudio 返回 false，说明数量超限，它内部已经弹窗了，这里不用处理
+    }
+
+    // 释放拖拽句柄内存
+    DragFinish(hDrop);
+    return 0;
+  }
   case WM_KEYDOWN:
   {
     if (wParam == VK_SPACE) { TogglePlayback(); g_buttons[1].text = g_isPlaying ? L"\uE769" : L"\uE768"; InvalidateRect(hwnd, nullptr, FALSE); }
-    else if (wParam == VK_LEFT) { if (!g_playlist.empty()) { int idx = g_currentIndex - 1; if (idx < 0) idx = (int)g_playlist.size() - 1; PlayTrackByIndex(idx, true); } }
-    else if (wParam == VK_RIGHT) { if (!g_playlist.empty()) { int idx = g_currentIndex + 1; if (idx >= (int)g_playlist.size()) idx = 0; PlayTrackByIndex(idx, true); } }
+    else if (wParam == VK_LEFT) {
+      if (!g_playlist.empty()) {
+        int nextIdx = 0;
+        // [新增] 随机模式回退
+        if (g_playMode == PM_SHUFFLE && !g_shuffleList.empty()) {
+          g_shufflePos--;
+          if (g_shufflePos < 0) g_shufflePos = (int)g_shuffleList.size() - 1;
+          nextIdx = g_shuffleList[g_shufflePos];
+        }
+        else {
+          // 原有逻辑
+          nextIdx = g_currentIndex - 1;
+          if (nextIdx < 0) nextIdx = (int)g_playlist.size() - 1;
+        }
+        PlayTrackByIndex(nextIdx, true);
+      }
+    }
+    else if (wParam == VK_RIGHT) {
+      if (!g_playlist.empty()) {
+        int nextIdx = 0;
+        // [新增] 随机模式前进
+        if (g_playMode == PM_SHUFFLE && !g_shuffleList.empty()) {
+          g_shufflePos++;
+          if (g_shufflePos >= (int)g_shuffleList.size()) g_shufflePos = 0;
+          nextIdx = g_shuffleList[g_shufflePos];
+        }
+        else {
+          // 原有逻辑
+          nextIdx = g_currentIndex + 1;
+          if (nextIdx >= (int)g_playlist.size()) nextIdx = 0;
+        }
+        PlayTrackByIndex(nextIdx, true);
+      }
+    }
     else if (wParam == VK_UP) { g_volume += 0.05f; if (g_volume > 1.0f) g_volume = 1.0f; if (g_stream) BASS_ChannelSetAttribute(g_stream, BASS_ATTRIB_VOL, g_volume); UpdateAppTitle(hwnd); }
     else if (wParam == VK_DOWN) { g_volume -= 0.05f; if (g_volume < 0.0f) g_volume = 0.0f; if (g_stream) BASS_ChannelSetAttribute(g_stream, BASS_ATTRIB_VOL, g_volume); UpdateAppTitle(hwnd); }
     else if (wParam == 'M') { SendMessage(hwnd, WM_COMMAND, IDM_SET_SIMPLEMODE, 0); }
@@ -624,6 +770,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
       if (relativeY > g_headerHeight) {
         int clickedIndex = (int)((relativeY - g_headerHeight) / LIST_ITEM_HEIGHT);
         if (clickedIndex >= 0 && clickedIndex < (int)g_playlist.size()) {
+          if (g_playMode == PM_SHUFFLE) {
+            UpdateShuffleList(clickedIndex);
+          }
           PlayTrackByIndex(clickedIndex, true); // 选中并播放
         }
       }
@@ -633,9 +782,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
       if (btn.isDown) {
         btn.isDown = false; ReleaseCapture();
         if (IsPointInRect(ptDip, btn.rect)) {
-          if (btn.id == 1 && !g_playlist.empty()) { int idx = g_currentIndex - 1; if (idx < 0) idx = (int)g_playlist.size() - 1; PlayTrackByIndex(idx); }
+          if (btn.id == 1 && !g_playlist.empty()) {
+            int nextIdx = 0;
+            // [新增]
+            if (g_playMode == PM_SHUFFLE && !g_shuffleList.empty()) {
+              g_shufflePos--;
+              if (g_shufflePos < 0) g_shufflePos = (int)g_shuffleList.size() - 1;
+              nextIdx = g_shuffleList[g_shufflePos];
+            }
+            else {
+              nextIdx = g_currentIndex - 1;
+              if (nextIdx < 0) nextIdx = (int)g_playlist.size() - 1;
+            }
+            PlayTrackByIndex(nextIdx);
+          }
           else if (btn.id == 2) { TogglePlayback(); btn.text = g_isPlaying ? L"\uE769" : L"\uE768"; }
-          else if (btn.id == 3 && !g_playlist.empty()) { int idx = g_currentIndex + 1; if (idx >= (int)g_playlist.size()) idx = 0; PlayTrackByIndex(idx); }
+          else if (btn.id == 3 && !g_playlist.empty()) {
+            int nextIdx = 0;
+            // [新增]
+            if (g_playMode == PM_SHUFFLE && !g_shuffleList.empty()) {
+              g_shufflePos++;
+              if (g_shufflePos >= (int)g_shuffleList.size()) g_shufflePos = 0;
+              nextIdx = g_shuffleList[g_shufflePos];
+            }
+            else {
+              nextIdx = g_currentIndex + 1;
+              if (nextIdx >= (int)g_playlist.size()) nextIdx = 0;
+            }
+            PlayTrackByIndex(nextIdx);
+          }
           else if (btn.id == 4) {
             HMENU hMenu = CreatePopupMenu();
             AppendMenuW(hMenu, MF_STRING, IDM_SET_PLAYLIST, L"选择歌单");
@@ -643,10 +818,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AppendMenuW(hSubMenuMode, MF_STRING, IDM_MODE_ORDER, L"顺序播放");
             AppendMenuW(hSubMenuMode, MF_STRING, IDM_MODE_LISTLOOP, L"列表循环");
             AppendMenuW(hSubMenuMode, MF_STRING, IDM_MODE_SINGLELOOP, L"单曲循环");
+            AppendMenuW(hSubMenuMode, MF_STRING, IDM_MODE_SHUFFLE, L"随机播放");
             int checkedID = IDM_MODE_ORDER;
             if (g_playMode == PM_LIST_LOOP) checkedID = IDM_MODE_LISTLOOP;
             else if (g_playMode == PM_SINGLE_LOOP) checkedID = IDM_MODE_SINGLELOOP;
-            CheckMenuRadioItem(hSubMenuMode, IDM_MODE_ORDER, IDM_MODE_SINGLELOOP, checkedID, MF_BYCOMMAND);
+            else if (g_playMode == PM_SHUFFLE) checkedID = IDM_MODE_SHUFFLE; // [新增] 检查状态
+            CheckMenuRadioItem(hSubMenuMode, IDM_MODE_ORDER, IDM_MODE_SHUFFLE, checkedID, MF_BYCOMMAND);
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hSubMenuMode, L"播放模式");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
             HMENU hSubMenuSpec = CreatePopupMenu();
@@ -950,6 +1127,32 @@ std::wstring GetTruncatedString(const std::wstring& text, int limitWeight) {
   return needEllipsis ? result + L"..." : text;
 }
 
+void UpdateShuffleList(int targetIndex) {
+  size_t count = g_playlist.size();
+  if (count == 0) return;
+
+  // 1. 初始化列表：0, 1, 2, 3 ... N-1
+  g_shuffleList.resize(count);
+  std::iota(g_shuffleList.begin(), g_shuffleList.end(), 0);
+
+  // 2. 如果指定的 targetIndex 有效，把它交换到第 0 位
+  // 这样保证了“此时此刻正在听的歌”就是随机列表的起点
+  if (targetIndex >= 0 && targetIndex < (int)count) {
+    std::swap(g_shuffleList[0], g_shuffleList[targetIndex]);
+  }
+
+  // 3. 对剩下的部分 (从索引 1 开始到结尾) 进行真正的洗牌 (Fisher-Yates)
+  if (count > 1) {
+    // 使用高质量随机数引擎
+    static std::random_device rd;
+    static std::mt19937 g(rd());
+    std::shuffle(g_shuffleList.begin() + 1, g_shuffleList.end(), g);
+  }
+
+  // 4. 重置洗牌指针到开头
+  g_shufflePos = 0;
+}
+
 void PlayTrackByIndex(int index, bool startPlaying) {
   if (g_playlist.empty()) return;
 
@@ -1136,7 +1339,7 @@ void OnPaint()
   g_renderTarget->Clear(colWinBg);
 
   // --- 浅色主题下的模糊背景 ---
-  if (!g_isDarkMode && g_bitmap && g_renderTarget) {
+  if (!g_isDarkMode && !g_playlist.empty() && g_bitmap && g_renderTarget) {
 
     // 【关键点 1】分辨率降级：从 40 改为 12
     // 12x12 的分辨率足以提取主色调，但又低到足以抹平所有文字和细节
@@ -4651,6 +4854,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
   RECT rc = { 0, 0, physicalW, physicalH }; AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
   int winW = rc.right - rc.left, winH = rc.bottom - rc.top; int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
   g_hwnd = CreateWindowExW(0, L"D2D_A42_Wave", L"KeyPlayer\u3000", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, (screenW - winW) / 2, (screenH - winH) / 2, winW, winH, nullptr, nullptr, hInstance, nullptr);
+
+  // [新增] 允许接收拖拽文件
+  DragAcceptFiles(g_hwnd, TRUE);
 
   ShowWindow(g_hwnd, nCmdShow); SetTimer(g_hwnd, IDT_TIMER_PLAYCHECK, 500, nullptr); SetTimer(g_hwnd, IDT_TIMER_UI, 16, nullptr);
   int argc = 0; LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
