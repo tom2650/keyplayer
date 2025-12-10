@@ -83,6 +83,7 @@
 #define IDM_SET_SPECTRUM_GRIND     3022
 #define IDM_SET_SPECTRUM_BLIZZARD  3023
 #define IDM_SET_SPECTRUM_WINDOW    3024
+#define IDM_SET_SPECTRUM_SPHERE    3025
 
 #define IDT_TIMER_PLAYCHECK 1 
 #define IDT_TIMER_UI        2 
@@ -95,7 +96,7 @@ enum SpectrumMode {
   SPEC_LED = 12, SPEC_RAIN = 13, SPEC_NET = 14, SPEC_GRAVITY = 15,
   SPEC_SYNTHWAVE = 16, SPEC_SYMBIOTE = 17, SPEC_VINYL = 18, SPEC_SPIRAL = 19,
   SPEC_WARP = 20, SPEC_PLANET = 21, SPEC_GRIND = 22, SPEC_BLIZZARD = 23,
-  SPEC_WINDOW = 24
+  SPEC_WINDOW = 24, SPEC_SPHERE = 25
 };
 
 struct LyricEntry {
@@ -239,14 +240,19 @@ float g_fftPeaks[SPEC_BARS] = { 0.0f };
 struct AppButton { D2D1_RECT_F rect; bool isDown; bool isHover; const wchar_t* text; int id; };
 
 // 频谱特效结构体
+// --- 绚丽气泡结构体 ---
 struct Bubble { float x, y, radius, speed, alpha; D2D1_COLOR_F color; };
 std::vector<Bubble> g_bubbles;
+// --- 星际粒子结构体 ---
 struct StarParticle { float x, y, vx, vy, size, alpha; D2D1_COLOR_F color; };
 std::vector<StarParticle> g_stars;
+// --- 幻彩涟漪结构体 ---
 struct RippleRing { float radius, thickness, hue, alpha, speed; };
 std::vector<RippleRing> g_ripples; DWORD g_lastRippleTime = 0;
-struct RainDrop { float x, y, speed, length, alpha; bool isHeavy; D2D1_COLOR_F color; };
+// --- 霓虹细雨结构体 ---
+struct RainDrop { int type; float x, y; float vy; float width; float height; float maxLife; float life; D2D1_COLOR_F color; };
 std::vector<RainDrop> g_rainDrops;
+// --- 繁星之网结构体 ---
 struct NetParticle { float x, y, vx, vy, baseSize; };
 std::vector<NetParticle> g_particles;
 // --- 引力奇点结构体 ---
@@ -262,7 +268,7 @@ float g_vinylRotation = 0.0f;
 struct SpiralNode { float intensity; float hue; };
 std::vector<SpiralNode> g_spiralHistory;
 double g_lastSpiralTime = -1.0;
-// --- 超光速隧道结构体 ---
+// --- 光速隧道结构体 ---
 struct WarpFrame { float z; float fft[32]; D2D1_COLOR_F color; };
 std::vector<WarpFrame> g_warpTunnel;
 bool g_warpInit = false;
@@ -279,12 +285,29 @@ struct GrindSpark { float x, y; float vx, vy; float life; D2D1_COLOR_F color; };
 std::vector<GrindSpark> g_grindSparks;
 float g_innerAngle = 0.0f;
 float g_outerAngle = 0.0f;
-// --- 极地风暴粒子 ---
+// --- 极地风暴结构体 ---
 struct BlizzardParticle { float x, y; float vx, vy; float z; float life; };
 const int BLIZZARD_COUNT = 600;
 std::vector<BlizzardParticle> g_snowParticles;
 bool g_blizzardInit = false;
+// --- 网点球体结构体 ---
+struct Star3D { float x, y, z; float baseRadius; bool isExploding; float vx, vy, vz; float size; D2D1_COLOR_F color; };
+std::vector<Star3D> g_stars3D;
+bool g_star3DInit = false;
+float g_sphereRotationY = 0.0f;
+float g_sphereRotationX = 0.0f;
+float g_sphereHue = 0.0f;
+// --- 【毒液特效专用】 ---
+struct VenomParticle {
+  float x, y;
+  float vx, vy;
+  float life;      // 寿命 1.0 -> 0.0
+  float size;
+  D2D1_COLOR_F color;
+};
+std::vector<VenomParticle> g_venomParticles;
 
+// --------------------------------------------------------------------------------------------
 
 AppButton g_buttons[4] = {
     { D2D1::RectF(20.0f,  260.0f, 70.0f,  285.0f), false, false, L"\uE892", 1 }, // 上一首图标
@@ -456,7 +479,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case IDM_SET_SPECTRUM_GRIND: g_spectrumMode = SPEC_GRIND; g_grindSparks.clear(); InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_SPECTRUM_BLIZZARD: g_spectrumMode = SPEC_BLIZZARD; g_blizzardInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_SPECTRUM_WINDOW: g_spectrumMode = SPEC_WINDOW; g_blizzardInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
-
+    case IDM_SET_SPECTRUM_SPHERE: g_spectrumMode = SPEC_SPHERE; g_star3DInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
+    
     case IDM_SET_THEME: g_isDarkMode = !g_isDarkMode; UpdateTitleBarTheme(hwnd); InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_LYRICS: g_showLyrics = !g_showLyrics; if (g_showLyrics) { if (!g_currentFilePath.empty()) LoadAndParseLyrics(g_currentFilePath); else { g_lyricsData.clear(); g_lyricsDisplayStr = L"暂无正在播放的歌曲"; } } InvalidateRect(hwnd, nullptr, FALSE); break;
     }
@@ -475,8 +499,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     else if (wParam == 'V') {
       // 1. 计算下一个模式的索引
       int nextMode = g_spectrumMode + 1;
-      // 枚举里最后一个是 SPEC_WINDOW (值是24)，如果超过它，就回到 SPEC_NONE (0)
-      if (nextMode > SPEC_WINDOW) nextMode = SPEC_NONE;
+      // 枚举里最后一个是 SPEC_SPHERE (值是25)，如果超过它，就回到 SPEC_NONE (0)
+      if (nextMode > SPEC_SPHERE) nextMode = SPEC_NONE;
 
       // 2. 计算对应的菜单 ID
       // IDM_SET_COVER 是 3000，IDM_SET_SPECTRUM_BAR 是 3001...
@@ -599,7 +623,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AddSpecItem(IDM_SET_SPECTRUM_RIPPLE, L"幻彩涟漪");
             AddSpecItem(IDM_SET_SPECTRUM_PIXEL, L"像素山丘");
             AddSpecItem(IDM_SET_SPECTRUM_LED, L"复古屏幕");
-            AddSpecItem(IDM_SET_SPECTRUM_RAIN, L"像素暴雨");
+            AddSpecItem(IDM_SET_SPECTRUM_RAIN, L"霓虹细雨");
             AddSpecItem(IDM_SET_SPECTRUM_NET, L"繁星之网");
             AddSpecItem(IDM_SET_SPECTRUM_GRAVITY, L"引力奇点");
             AddSpecItem(IDM_SET_SPECTRUM_SYNTHWAVE, L"赛博夕阳");
@@ -611,6 +635,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AddSpecItem(IDM_SET_SPECTRUM_GRIND, L"虚空磨盘");
             AddSpecItem(IDM_SET_SPECTRUM_BLIZZARD, L"极地风暴");
             AddSpecItem(IDM_SET_SPECTRUM_WINDOW, L"静谧雪窗");
+            AddSpecItem(IDM_SET_SPECTRUM_SPHERE, L"网点球体");
+
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hSubMenuSpec, L"视觉效果");
             AppendMenuW(hMenu, MF_STRING, IDM_SET_LYRICS, g_showLyrics ? L"显示列表" : L"显示歌词");
             AppendMenuW(hMenu, MF_STRING, IDM_SET_SIMPLEMODE, g_isSimpleMode ? L"标准视图" : L"极简视图");
@@ -1066,30 +1092,99 @@ void OnPaint()
         // ... (此处频谱绘制代码，完全保持原样即可) ...
         // --- 经典长条 (SPEC_BAR) ---
         if (g_spectrumMode == SPEC_BAR) {
-          int numBars = SPEC_BARS;
-          float barWidth = (g_imageBoxRect.right - g_imageBoxRect.left) / numBars;
-          float heightScale = (g_imageBoxRect.bottom - g_imageBoxRect.top);
+          // 物理下落系统 (保持不变)
+          static float floatingTips[128] = { 0 };
+          static float dropVelocity[128] = { 0 };
+
+          // 1. 背景：纯黑
+          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
+          g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
+
+          int numBars = 64; // 64根柱子看起来比较细腻
+
+          // 布局参数
+          float totalW = g_imageBoxRect.right - g_imageBoxRect.left;
+          float barW = (totalW / numBars) * 0.7f; // 柱子宽度
+          float gap = (totalW / numBars) * 0.3f;  // 间隙
+          // 留出顶部空间给悬浮块
+          float heightScale = (g_imageBoxRect.bottom - g_imageBoxRect.top) - 15.0f;
+          float bottomY = g_imageBoxRect.bottom;
+
           for (int i = 0; i < numBars; i++) {
-            int fftIdx = (int)(pow((float)i / numBars, 2.0f) * 200);
-            if (fftIdx >= 1024) fftIdx = 1023;
-            float val = fft[fftIdx] * 4.0f;
+
+            // --- A. 频率映射修正 (Fix Repetition) ---
+            // 旧算法问题：pow(i/num, 2.5) 在 i=0,1,2 时结果几乎都是 0
+            // 新算法：强制线性偏移 + 指数增长
+            // 这样保证了 i=0 取频段2, i=1 取频段3, i=2 取频段5... 绝对不重复
+            int fftIdx = 2 + i + (int)(pow((float)i / numBars, 3.0f) * 512);
+
+            if (fftIdx > 1023) fftIdx = 1023;
+
+            float val = fft[fftIdx] * 4.0f; // 放大系数
             if (val > 1.0f) val = 1.0f;
-            if (val > g_fftPeaks[i]) { g_fftPeaks[i] = val; }
-            else { g_fftPeaks[i] -= 0.03f; }
+
+            // --- B. 物理计算 (Physics) ---
+            // 柱子本体缓冲
+            if (val > g_fftPeaks[i]) g_fftPeaks[i] = val;
+            else g_fftPeaks[i] -= 0.03f;
             if (g_fftPeaks[i] < 0) g_fftPeaks[i] = 0;
-            float barHeight = g_fftPeaks[i] * heightScale;
-            D2D1_RECT_F barRect = D2D1::RectF(g_imageBoxRect.left + i * barWidth + 1, g_imageBoxRect.bottom - barHeight, g_imageBoxRect.left + (i + 1) * barWidth - 1, g_imageBoxRect.bottom);
-            if (g_brushSpectrum) {
-              D2D1_POINT_2F start = D2D1::Point2F(0, g_imageBoxRect.bottom);
-              D2D1_POINT_2F end = D2D1::Point2F(0, g_imageBoxRect.top);
-              g_brushSpectrum->SetStartPoint(start); g_brushSpectrum->SetEndPoint(end);
-              g_renderTarget->FillRectangle(barRect, g_brushSpectrum);
+
+            // 悬浮块物理
+            float currentH = g_fftPeaks[i];
+            if (currentH >= floatingTips[i]) {
+              floatingTips[i] = currentH;
+              dropVelocity[i] = 0.005f; // 重置下落速度
             }
             else {
-              g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::DeepSkyBlue));
-              g_renderTarget->FillRectangle(barRect, g_brush);
+              floatingTips[i] -= dropVelocity[i];
+              dropVelocity[i] += 0.003f; // 重力加速
+              if (floatingTips[i] < 0) floatingTips[i] = 0;
+            }
+
+            // --- C. 颜色计算 (幻彩流光) ---
+            // Hue (色相) = 时间流动 + 位置偏移
+            // 效果：彩虹色从左向右不断流动
+            float hue = g_musicTime * 0.15f + (float)i / numBars;
+            // 归一化到 0-1
+            hue = hue - floor(hue);
+
+            // 饱和度 0.85, 亮度 1.0 (鲜艳明亮)
+            D2D1_COLOR_F barColor = HsvToRgb(hue, 0.85f, 1.0f);
+
+            // --- D. 绘制 ---
+            float x = g_imageBoxRect.left + i * (barW + gap) + gap / 2;
+            float hBar = g_fftPeaks[i] * heightScale;
+            float hTip = floatingTips[i] * heightScale;
+
+            // 1. 柱子 (Bar)
+            if (hBar > 1.0f) {
+              D2D1_RECT_F rect = D2D1::RectF(x, bottomY - hBar, x + barW, bottomY);
+
+              // 使用流光色
+              g_brush->SetColor(barColor);
+              g_brush->SetOpacity(0.9f);
+              g_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(rect, 2.0f, 2.0f), g_brush);
+
+              // (可选) 柱子背后的淡淡辉光，增加氛围
+              g_brush->SetOpacity(0.3f);
+              D2D1_RECT_F glowRect = rect;
+              glowRect.left -= 2.0f; glowRect.right += 2.0f; glowRect.top -= 5.0f;
+              g_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(glowRect, 4.0f, 4.0f), g_brush);
+            }
+
+            // 2. 悬浮块 (Tip)
+            // 只有当它比柱子高的时候才画，避免重叠难看
+            if (hTip > hBar + 2.0f) {
+              D2D1_RECT_F tipRect = D2D1::RectF(x, bottomY - hTip, x + barW, bottomY - hTip + 3.0f); // 3px厚度
+
+              // 悬浮块用纯白色，最显眼
+              g_brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f));
+              g_brush->SetOpacity(1.0f);
+              g_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(tipRect, 1.0f, 1.0f), g_brush);
             }
           }
+          // 还原透明度
+          g_brush->SetOpacity(1.0f);
         }
 
         // --- 宿命之环 (SPEC_CIRCLE) ---
@@ -1235,7 +1330,7 @@ void OnPaint()
         // --- 动感波线 (SPEC_WAVE) ---
         else if (g_spectrumMode == SPEC_WAVE) {
 
-          // 1. 背景：深邃的夜空黑
+          // 1. 背景：纯黑 (对比度最高，让霓虹色最显眼)
           g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
           g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
 
@@ -1243,7 +1338,7 @@ void OnPaint()
           float cy = (g_imageBoxRect.top + g_imageBoxRect.bottom) / 2.0f;
           float width = g_imageBoxRect.right - g_imageBoxRect.left;
 
-          // 2. 提取能量 (Bass/Mid/Treble) 用于驱动波浪幅度
+          // 2. 提取能量 (完全保持原逻辑)
           float energyBass = 0.0f;
           float energyMid = 0.0f;
           float energyHigh = 0.0f;
@@ -1260,8 +1355,12 @@ void OnPaint()
           energyMid = energyMid * 4.0f;
           energyHigh = energyHigh * 8.0f;
 
+          // 3. 配置波浪参数
           struct WaveConfig {
-            D2D1_COLOR_F color;
+            // 改为 3 段渐变色，让颜色极其丰富
+            D2D1_COLOR_F col1; // 左
+            D2D1_COLOR_F col2; // 中
+            D2D1_COLOR_F col3; // 右
             float speed;
             float freq;
             float amplitude;
@@ -1269,22 +1368,64 @@ void OnPaint()
           };
 
           WaveConfig waves[] = {
-              { D2D1::ColorF(D2D1::ColorF::Cyan), 2.0f, 3.0f, 0.4f + energyBass * 1.5f, 3.0f },
-              { D2D1::ColorF(D2D1::ColorF::Magenta), 3.5f, 4.5f, 0.3f + energyMid * 1.2f, 2.0f },
-              { D2D1::ColorF(D2D1::ColorF::Gold), 1.5f, 2.0f, 0.2f + energyHigh * 1.0f, 1.5f }
+            // 1. 冷色调流光 (Bass): 紫罗兰 -> 深天蓝 -> 荧光青
+            {
+                D2D1::ColorF(0x9400D3), D2D1::ColorF(0x00BFFF), D2D1::ColorF(0x00FFFF),
+                2.0f, 3.0f, 0.4f + energyBass * 1.5f, 4.0f // 线条加粗到 4.0
+            },
+
+            // 2. 暖色调霓虹 (Mid): 魅影红 -> 骚粉 -> 柠檬黄
+            {
+                D2D1::ColorF(0xFF0000), D2D1::ColorF(0xFF1493), D2D1::ColorF(0xFFFF00),
+                3.5f, 4.5f, 0.3f + energyMid * 1.2f, 3.0f // 线条加粗到 3.0
+            },
+
+            // 3. 高能亮色 (Treble): 翠绿 -> 亮白 -> 电光紫
+            {
+                D2D1::ColorF(0x00FF00), D2D1::ColorF(0xFFFFFF), D2D1::ColorF(0x8A2BE2),
+                1.5f, 2.0f, 0.2f + energyHigh * 1.0f, 2.0f // 线条加粗到 2.0
+            }
           };
 
           float step = 2.0f;
 
           for (int w = 0; w < 3; w++) {
             WaveConfig& cfg = waves[w];
-            g_brush->SetColor(cfg.color);
-            g_brush->SetOpacity(0.8f);
+
+            // --- 【核心修改】创建 3 段式渐变画笔 ---
+            ID2D1LinearGradientBrush* pGradientBrush = nullptr;
+            D2D1_GRADIENT_STOP stops[3]; // 变成3个点
+
+            stops[0].position = 0.0f; stops[0].color = cfg.col1; // 左
+            stops[1].position = 0.5f; stops[1].color = cfg.col2; // 中
+            stops[2].position = 1.0f; stops[2].color = cfg.col3; // 右
+
+            ID2D1GradientStopCollection* pColl = nullptr;
+            HRESULT hr = g_renderTarget->CreateGradientStopCollection(stops, 3, &pColl); // 注意这里是3
+
+            if (SUCCEEDED(hr)) {
+              hr = g_renderTarget->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(
+                  D2D1::Point2F(g_imageBoxRect.left, 0),
+                  D2D1::Point2F(g_imageBoxRect.right, 0)
+                ),
+                pColl, &pGradientBrush);
+
+              pColl->Release();
+            }
+
+            // 兜底逻辑
+            ID2D1Brush* pDrawBrush = pGradientBrush ? (ID2D1Brush*)pGradientBrush : (ID2D1Brush*)g_brush;
+            if (!pGradientBrush) g_brush->SetColor(cfg.col2);
+
+            // 【修改】不透明度设为 1.0 (完全不透)，保证颜色最鲜艳
+            pDrawBrush->SetOpacity(1.0f);
 
             D2D1_POINT_2F prevPt = D2D1::Point2F(g_imageBoxRect.left, cy);
             float timeOffset = g_musicTime * cfg.speed;
 
             for (float x = g_imageBoxRect.left; x <= g_imageBoxRect.right; x += step) {
+              // 保持原版算法不动
               float normX = (x - g_imageBoxRect.left) / width * 2.0f - 1.0f;
               float envelope = 1.0f - (normX * normX);
               if (envelope < 0) envelope = 0;
@@ -1292,29 +1433,28 @@ void OnPaint()
               float waveVal = sin(normX * 3.14159f * cfg.freq + timeOffset);
               waveVal += sin(normX * 3.14159f * (cfg.freq * 2.0f) + timeOffset) * 0.5f;
 
-              // 计算 Y 坐标
               float y = cy + waveVal * cfg.amplitude * envelope * (g_imageBoxRect.bottom - g_imageBoxRect.top) * 0.35f;
 
               D2D1_POINT_2F currentPt = D2D1::Point2F(x, y);
 
               if (x > g_imageBoxRect.left) {
-                g_renderTarget->DrawLine(prevPt, currentPt, g_brush, cfg.strokeWidth);
+                g_renderTarget->DrawLine(prevPt, currentPt, pDrawBrush, cfg.strokeWidth);
               }
               prevPt = currentPt;
             }
+
+            if (pGradientBrush) pGradientBrush->Release();
           }
-          g_brush->SetOpacity(1.0f);
 
-          // 5. 加一条中间的辉光线
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
-          g_brush->SetOpacity(0.1f);
-          g_renderTarget->DrawLine(
-            D2D1::Point2F(g_imageBoxRect.left, cy),
-            D2D1::Point2F(g_imageBoxRect.right, cy),
-            g_brush, 1.0f
-          );
-          g_brush->SetOpacity(1.0f);
-
+          // 5. 中间辉光线 (保持不变)
+          //g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
+          //g_brush->SetOpacity(0.2f); // 稍微亮一点点
+          //g_renderTarget->DrawLine(
+          //  D2D1::Point2F(g_imageBoxRect.left, cy),
+          //  D2D1::Point2F(g_imageBoxRect.right, cy),
+          //  g_brush, 1.0f
+          //);
+          //g_brush->SetOpacity(1.0f);
         }
 
         // --- 绚丽气泡 (SPEC_BUBBLE) ---
@@ -2020,111 +2160,184 @@ void OnPaint()
           }
         }
 
-        // --- 像素暴雨 (Pixel Rain) ---
+        // --- 霓虹细雨 (Rain) ---
         else if (g_spectrumMode == SPEC_RAIN) {
+          g_renderTarget->PushAxisAlignedClip(g_imageBoxRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-          // 1. 设置黑色背景
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
+          // 1. 背景：带一点点深蓝的黑，营造夜雨氛围
+          g_brush->SetColor(D2D1::ColorF(0.02f, 0.02f, 0.05f));
           g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
 
-          // 2. 分析音频能量 (低音)
-          float bass = 0.0f;
-          for (int k = 1; k < 6; k++) bass += fft[k];
-          bass /= 5.0f;
+          // 2. 音频分析
+          float bass = 0.0f, mid = 0.0f, high = 0.0f;
+          if (g_stream && g_isPlaying) {
+            // 计算能量
+            for (int k = 1; k < 5; k++) bass += fft[k]; bass /= 4.0f;
+            for (int k = 10; k < 50; k++) mid += fft[k]; mid /= 40.0f;
+            // 简单的节拍检测
+            if (bass > 0.3f) mid *= 1.5f;
+          }
 
-          // 3. 生成雨滴逻辑
-          float boxW = g_imageBoxRect.right - g_imageBoxRect.left;
-          float pixelGrid = 8.0f; // 像素网格宽度
+          // 3. 生成新雨滴 (Spawn)
+          // 逻辑：基础雨量 + 低音带来的暴雨
+          int spawnRate = 1 + (int)(bass * 40.0f);
 
-          // A. 基础背景雨 (稀疏，慢速，暗色)
-          if ((rand() % 100) < 15) {
+          for (int i = 0; i < spawnRate; i++) {
+            // 限制总粒子数，防止卡顿
+            if (g_rainDrops.size() > 500) break;
+
             RainDrop r;
-            int col = rand() % (int)(boxW / pixelGrid);
-            r.x = g_imageBoxRect.left + col * pixelGrid;
-            r.y = g_imageBoxRect.top - 20.0f; // 从框外一点生成
-            r.speed = 4.0f + (float)(rand() % 5);
-            r.length = 5.0f + (float)(rand() % 10);
-            r.alpha = 0.3f;
-            r.isHeavy = false;
-            r.color = D2D1::ColorF(D2D1::ColorF::DarkGreen);
+            r.type = 0; // 雨滴
+
+            float boxW = g_imageBoxRect.right - g_imageBoxRect.left;
+            // 随机 X 坐标
+            r.x = g_imageBoxRect.left + (rand() % (int)boxW);
+            // 从顶部随机位置开始，营造层次感
+            r.y = g_imageBoxRect.top - (float)(rand() % 50);
+
+            // 速度：基础速度 + 随机快慢
+            r.vy = 8.0f + (float)(rand() % 10) + bass * 15.0f;
+
+            r.width = 1.0f + (rand() % 2); // 细雨丝
+            r.height = 10.0f + r.vy * 1.5f; // 速度越快，拉得越长 (视觉暂留)
+
+            r.maxLife = 1.0f;
+            r.life = 1.0f;
+
+            // 颜色：赛博霓虹配色 (顶部紫 -> 底部青)
+            // 这里初始给一个高亮色，后面根据高度变色
+            r.color = D2D1::ColorF(1.0f, 1.0f, 1.0f);
+
             g_rainDrops.push_back(r);
           }
 
-          // B. 动态暴雨 (随低音生成，密集，快速，亮色)
-          int spawnCount = (int)(bass * 30.0f);
-          if (spawnCount > 0) {
-            for (int i = 0; i < spawnCount; i++) {
-              RainDrop r;
-              int col = rand() % (int)(boxW / pixelGrid);
-              r.x = g_imageBoxRect.left + col * pixelGrid;
-              r.y = g_imageBoxRect.top - 50.0f; // 从更高处生成以获得加速感
+          // 4. 更新与绘制循环
+          float bottomY = g_imageBoxRect.bottom;
 
-              r.speed = 10.0f + bass * 20.0f + (float)(rand() % 5);
-              r.length = 20.0f + bass * 50.0f;
+          for (auto it = g_rainDrops.begin(); it != g_rainDrops.end(); ) {
 
-              r.alpha = 0.8f + (bass * 0.2f);
-              r.isHeavy = true;
+            // === 处理雨滴 (Falling) ===
+            if (it->type == 0) {
+              it->y += it->vy;
+              it->vy += 0.5f; // 重力加速！这是动感的关键
+              it->height = 10.0f + it->vy; // 越快越长
 
-              // 颜色动态变化：高能时刻变青/白
-              if (bass > 0.4f) r.color = D2D1::ColorF(D2D1::ColorF::Cyan);
-              else r.color = D2D1::ColorF(D2D1::ColorF::Lime);
+              // 撞击地面检测
+              if (it->y + it->height >= bottomY) {
+                // 转化为涟漪 (Ripple)
+                it->type = 1;
+                it->y = bottomY - 2.0f; // 贴地
+                it->maxLife = 15.0f;    // 涟漪存在 15 帧
+                it->life = 15.0f;
+                it->width = 2.0f;       // 初始宽度
+                it->height = 2.0f;      // 涟漪高度 (扁的)
+                // 落地时颜色变亮
+                it->color = D2D1::ColorF(0.5f, 1.0f, 1.0f);
+              }
+              else {
+                // 绘制雨滴
+                // 颜色随高度渐变：上空是紫/粉，下空是青/蓝
+                float progress = (it->y - g_imageBoxRect.top) / (bottomY - g_imageBoxRect.top);
+                if (progress < 0) progress = 0; if (progress > 1) progress = 1;
 
-              g_rainDrops.push_back(r);
+                // 简单的颜色插值：粉色(1, 0.2, 0.8) -> 青色(0, 1, 1)
+                float r = 1.0f * (1 - progress);
+                float g = 0.2f * (1 - progress) + 1.0f * progress;
+                float b = 0.8f * (1 - progress) + 1.0f * progress;
+
+                g_brush->SetColor(D2D1::ColorF(r, g, b));
+                g_brush->SetOpacity(0.6f + bass * 0.4f); // 低音震动时雨滴变亮
+
+                D2D1_RECT_F rect = D2D1::RectF(it->x, it->y, it->x + it->width, it->y + it->height);
+                g_renderTarget->FillRectangle(rect, g_brush);
+
+                ++it;
+              }
+            }
+            // === 处理涟漪 (Ripple) ===
+            else {
+              it->life -= 1.0f;
+              if (it->life <= 0) {
+                it = g_rainDrops.erase(it); // 消失
+              }
+              else {
+                // 涟漪扩散逻辑
+                it->width += 4.0f;  // 变宽
+                it->height *= 0.9f; // 变扁
+                it->x -= 2.0f;      // 向左扩一半，保持中心不动
+
+                float opacity = (it->life / it->maxLife);
+                g_brush->SetColor(it->color); // 青色
+                g_brush->SetOpacity(opacity);
+
+                // 画一个扁椭圆作为溅射效果
+                // 也可以简单用 FillRectangle 画一条横线模拟水波
+                D2D1_ELLIPSE splash = D2D1::Ellipse(
+                  D2D1::Point2F(it->x + it->width / 2.0f, it->y),
+                  it->width / 2.0f,
+                  1.5f // 很扁
+                );
+                g_renderTarget->FillEllipse(splash, g_brush);
+
+                ++it;
+              }
             }
           }
 
-          g_renderTarget->PushAxisAlignedClip(g_imageBoxRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+          // 5. 底部反光 (优化版：赛博地气/Cyber Fog)
+          // 不再复用彩虹画笔，而是创建一个临时的专属渐变，模拟潮湿地面的漫反射
+          ID2D1LinearGradientBrush* pGroundBrush = nullptr;
+          ID2D1GradientStopCollection* pGroundStops = nullptr;
+          D2D1_GRADIENT_STOP stops[2];
 
-          // 4. 更新并绘制雨滴
-          auto it = g_rainDrops.begin();
-          while (it != g_rainDrops.end()) {
-            // 更新位置
-            it->y += it->speed;
+          // 颜色配置：与雨滴呼应的“电光青”
+          // 顶部 (0.0)：完全透明，融入夜色
+          stops[0].position = 0.0f;
+          stops[0].color = D2D1::ColorF(0.0f, 0.8f, 1.0f, 0.0f);
 
-            // 边界检测：完全掉出屏幕底部则删除
-            if (it->y > g_imageBoxRect.bottom) {
-              it = g_rainDrops.erase(it);
-            }
-            else {
-              // 绘制主体
-              D2D1_RECT_F rainRect = D2D1::RectF(
-                it->x + 1,
-                it->y,
-                it->x + pixelGrid - 1,
-                it->y + it->length
+          // 底部 (1.0)：半透明亮青色 (随低音震动变亮)
+          float groundAlpha = 0.2f + bass * 0.5f; // 基础0.2 + 震动0.5
+          if (groundAlpha > 0.9f) groundAlpha = 0.9f;
+          stops[1].position = 1.0f;
+          stops[1].color = D2D1::ColorF(0.0f, 0.9f, 1.0f, groundAlpha);
+
+          HRESULT hr = g_renderTarget->CreateGradientStopCollection(stops, 2, &pGroundStops);
+          if (SUCCEEDED(hr)) {
+            // 创建垂直渐变画笔
+            float glowH = 80.0f; // 光雾高度
+            hr = g_renderTarget->CreateLinearGradientBrush(
+              D2D1::LinearGradientBrushProperties(
+                D2D1::Point2F(0, bottomY - glowH), // 起点：上方
+                D2D1::Point2F(0, bottomY)          // 终点：底部
+              ),
+              pGroundStops,
+              &pGroundBrush
+            );
+
+            if (SUCCEEDED(hr)) {
+              // 绘制光雾
+              D2D1_RECT_F glowRect = D2D1::RectF(
+                g_imageBoxRect.left,
+                bottomY - glowH,
+                g_imageBoxRect.right,
+                bottomY
+              );
+              g_renderTarget->FillRectangle(glowRect, pGroundBrush);
+
+              // 【点睛之笔】地平线高亮
+              // 在最底部画一条极细的亮线，增加“积水”的质感
+              g_brush->SetColor(D2D1::ColorF(0.5f, 1.0f, 1.0f, groundAlpha));
+              g_renderTarget->FillRectangle(
+                D2D1::RectF(g_imageBoxRect.left, bottomY - 2.0f, g_imageBoxRect.right, bottomY),
+                g_brush
               );
 
-              g_brush->SetColor(it->color);
-              g_brush->SetOpacity(it->alpha);
-              g_renderTarget->FillRectangle(rainRect, g_brush);
-
-              // 绘制高亮头 (仅重雨滴)
-              if (it->isHeavy) {
-                g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
-                g_brush->SetOpacity(0.9f);
-                g_renderTarget->FillRectangle(
-                  D2D1::RectF(it->x + 1, it->y + it->length - pixelGrid, it->x + pixelGrid - 1, it->y + it->length),
-                  g_brush
-                );
-              }
-
-              // 绘制落地溅射 (当雨滴接近底部时)
-              if (it->y + it->length >= g_imageBoxRect.bottom - 10.0f) {
-                float splashSize = it->isHeavy ? 3.0f : 1.0f;
-                g_brush->SetColor(it->color); // 用回雨滴颜色
-                g_renderTarget->FillRectangle(
-                  D2D1::RectF(it->x - splashSize, g_imageBoxRect.bottom - 3, it->x + pixelGrid + splashSize, g_imageBoxRect.bottom),
-                  g_brush
-                );
-              }
-
-              ++it;
+              pGroundBrush->Release();
             }
+            pGroundStops->Release();
           }
 
           g_renderTarget->PopAxisAlignedClip();
-
-          // 还原全局画笔透明度
           g_brush->SetOpacity(1.0f);
         }
 
@@ -2327,231 +2540,377 @@ void OnPaint()
 
         // --- 赛博夕阳 (SPEC_SYNTHWAVE) ---
         else if (g_spectrumMode == SPEC_SYNTHWAVE) {
-
-          // 1. 背景：深紫到黑的渐变天空
-          if (g_brushSpectrum) {
-            D2D1_POINT_2F start = D2D1::Point2F(0, g_imageBoxRect.top);
-            D2D1_POINT_2F end = D2D1::Point2F(0, g_imageBoxRect.bottom);
-            // 这里需要重新创建临时的渐变画笔来实现特定的天空色，或者简单用深紫色填充
-            g_brush->SetColor(D2D1::ColorF(0x100020)); // 深紫色背景
-            g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
-          }
+          g_renderTarget->PushAxisAlignedClip(g_imageBoxRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
           float width = g_imageBoxRect.right - g_imageBoxRect.left;
           float height = g_imageBoxRect.bottom - g_imageBoxRect.top;
           float cx = (g_imageBoxRect.left + g_imageBoxRect.right) / 2.0f;
-          float horizonY = g_imageBoxRect.top + height * 0.55f; // 地平线位置
+          // 地平线稍微下移一点，留出更多天空
+          float horizonY = g_imageBoxRect.top + height * 0.6f;
 
-          // 2. 绘制夕阳 (Sun)
-          // 太阳随低音震动
-          float bass = (fft[1] + fft[2] + fft[3]) / 3.0f;
-          float sunRadius = height * 0.25f + bass * 40.0f;
+          // ======================================================
+          // 1. 绘制天空 (Sky) - 深紫到黑的垂直渐变
+          // ======================================================
+          ID2D1LinearGradientBrush* pSkyBrush = nullptr;
+          D2D1_GRADIENT_STOP skyStops[2];
+          skyStops[0].position = 0.0f; skyStops[0].color = D2D1::ColorF(0x050010); // 顶：深空黑
+          skyStops[1].position = 1.0f; skyStops[1].color = D2D1::ColorF(0x2a003b); // 底：复古紫
 
-          // 太阳渐变色 (上黄下红)
-          // 这里简单画一个实心圆，然后画横条遮挡形成百叶窗效果
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::OrangeRed));
-          g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, horizonY - height * 0.1f), sunRadius, sunRadius), g_brush);
-
-          // 太阳中心的黄色高光
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Gold));
-          g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, horizonY - height * 0.1f), sunRadius * 0.6f, sunRadius * 0.6f), g_brush);
-
-          // 绘制横向遮罩条 (Retro Stripe Effect)
-          g_brush->SetColor(D2D1::ColorF(0x100020)); // 和背景同色
-          float stripeH = 2.0f;
-          for (float y = horizonY - sunRadius; y < horizonY; y += (stripeH * 2.5f)) {
-            // 越往下条纹越粗
-            float progress = (y - (horizonY - sunRadius)) / sunRadius;
-            float thickness = 1.0f + progress * 4.0f;
-            g_renderTarget->FillRectangle(D2D1::RectF(cx - sunRadius, y, cx + sunRadius, y + thickness), g_brush);
+          ID2D1GradientStopCollection* pSkyColl = nullptr;
+          HRESULT hr = g_renderTarget->CreateGradientStopCollection(skyStops, 2, &pSkyColl);
+          if (SUCCEEDED(hr)) {
+            hr = g_renderTarget->CreateLinearGradientBrush(
+              D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, g_imageBoxRect.top), D2D1::Point2F(0, horizonY)),
+              pSkyColl, &pSkyBrush);
+            if (SUCCEEDED(hr)) {
+              g_renderTarget->FillRectangle(D2D1::RectF(g_imageBoxRect.left, g_imageBoxRect.top, g_imageBoxRect.right, horizonY), pSkyBrush);
+              pSkyBrush->Release();
+            }
+            pSkyColl->Release();
           }
 
-          // 3. 绘制远处的频谱山脉 (Behind the grid)
-          // 把 FFT 数据镜像绘制在地平线上
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Magenta)); // 霓虹粉山脉
-          for (int i = 0; i < 64; i++) {
-            float val = fft[i] * 5.0f;
-            if (val > 1.0f) val = 1.0f;
+          // 绘制星星 (随机闪烁)
+          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
+          for (int i = 0; i < 30; i++) {
+            // 利用伪随机数固定星星位置，但让亮度随音乐跳动
+            float sx = g_imageBoxRect.left + (float)((i * 8347) % (int)width);
+            float sy = g_imageBoxRect.top + (float)((i * 3921) % (int)(height * 0.5f));
+            float starAlpha = 0.3f + ((rand() % 100) / 100.0f) * 0.7f;
 
-            // 左边山脉
-            float barW = width / 128.0f;
-            float xLeft = cx - i * barW;
-            float h = val * height * 0.3f;
-            g_renderTarget->FillRectangle(D2D1::RectF(xLeft - barW + 1, horizonY - h, xLeft, horizonY), g_brush);
+            // 高音强时星星变亮
+            float treble = (fft[100] + fft[200]) * 10.0f;
+            if (treble > 1.0f) treble = 1.0f;
 
-            // 右边山脉 (镜像)
-            float xRight = cx + i * barW;
-            g_renderTarget->FillRectangle(D2D1::RectF(xRight, horizonY - h, xRight + barW - 1, horizonY), g_brush);
+            g_brush->SetOpacity(starAlpha + treble * 0.5f);
+            g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), 1.0f, 1.0f), g_brush);
+          }
+          g_brush->SetOpacity(1.0f);
+
+          // ======================================================
+          // 2. 绘制复古夕阳 (Retro Sun)
+          // ======================================================
+          float bass = 0.0f;
+          for (int k = 1; k < 5; k++) bass += fft[k]; bass /= 4.0f;
+
+          float sunRadius = width * 0.25f;
+          D2D1_POINT_2F sunCenter = D2D1::Point2F(cx, horizonY - sunRadius * 0.7f); // 半沉入地平线
+
+          // 太阳渐变：上黄 -> 下红紫
+          ID2D1LinearGradientBrush* pSunBrush = nullptr;
+          D2D1_GRADIENT_STOP sunStops[3];
+          sunStops[0].position = 0.0f; sunStops[0].color = D2D1::ColorF(0xFFE600); // 亮黄
+          sunStops[1].position = 0.5f; sunStops[1].color = D2D1::ColorF(0xFF0055); // 玫红
+          sunStops[2].position = 1.0f; sunStops[2].color = D2D1::ColorF(0x800080); // 紫
+
+          hr = g_renderTarget->CreateGradientStopCollection(sunStops, 3, &pSkyColl);
+          if (SUCCEEDED(hr)) {
+            hr = g_renderTarget->CreateLinearGradientBrush(
+              D2D1::LinearGradientBrushProperties(
+                D2D1::Point2F(0, sunCenter.y - sunRadius),
+                D2D1::Point2F(0, sunCenter.y + sunRadius)),
+              pSkyColl, &pSunBrush);
+
+            if (SUCCEEDED(hr)) {
+              // 画太阳主体
+              g_renderTarget->FillEllipse(D2D1::Ellipse(sunCenter, sunRadius, sunRadius), pSunBrush);
+              pSunBrush->Release();
+            }
+            pSkyColl->Release();
           }
 
-          // 4. 绘制透视网格地面 (Grid)
-          // 强制裁剪，防止线画出框
-          g_renderTarget->PushAxisAlignedClip(g_imageBoxRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+          // 绘制太阳切割线 (Blinds)
+          // 从上往下，线条越来越厚，间距越来越大
+          g_brush->SetColor(D2D1::ColorF(0x2a003b)); // 用地平线附近的颜色切割
+          // 稍微混合一点低音震动，让切割线跳动
+          float cutY = sunCenter.y - sunRadius * 0.2f;
+          float gap = 2.0f;
+          float thickness = 1.0f;
 
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Cyan));
-          g_brush->SetOpacity(0.5f); // 半透明网格
+          while (cutY < horizonY) {
+            float distPercent = (cutY - (sunCenter.y - sunRadius)) / (sunRadius * 2.0f);
+            // 越往下越粗
+            thickness = 1.0f + distPercent * 8.0f;
+            gap = 3.0f + distPercent * 5.0f;
 
-          // 纵向线 (从灭点发射)
-          int numVLines = 12;
+            // 只有在太阳范围内的才画
+            float dy = abs(cutY - sunCenter.y);
+            if (dy < sunRadius) {
+              float dx = sqrt(sunRadius * sunRadius - dy * dy);
+              g_renderTarget->FillRectangle(D2D1::RectF(sunCenter.x - dx, cutY, sunCenter.x + dx, cutY + thickness), g_brush);
+            }
+            cutY += (thickness + gap);
+          }
+
+          // ======================================================
+          // 3. 绘制实体山脉 (Wireframe Mountains) - 核心优化
+          // ======================================================
+          // 我们用 PathGeometry 画一个连通的多边形，填充黑色，描边粉色
+          ID2D1PathGeometry* pMountainGeo = nullptr;
+          g_d2dFactory->CreatePathGeometry(&pMountainGeo);
+
+          if (pMountainGeo) {
+            ID2D1GeometrySink* pSink = nullptr;
+            pMountainGeo->Open(&pSink);
+            pSink->SetFillMode(D2D1_FILL_MODE_WINDING);
+
+            // 起点：左下角地平线
+            pSink->BeginFigure(D2D1::Point2F(g_imageBoxRect.left, horizonY), D2D1_FIGURE_BEGIN_FILLED);
+
+            // 生成山峰点
+            int points = 64;
+            float stepX = width / (float)(points - 1);
+
+            for (int i = 0; i < points; i++) {
+              // 对称镜像：0-31 和 63-32
+              int fftIdx = (i < points / 2) ? (points / 2 - 1 - i) : (i - points / 2);
+              float val = fft[fftIdx] * 5.0f; // 放大频谱
+              if (val > 1.0f) val = 1.0f;
+
+              // 基础山形 (Perlin Noise 模拟，这里用 sin 模拟起伏) + 频谱叠加
+              float baseHeight = sin(i * 0.3f) * 10.0f + 15.0f;
+              float musicHeight = val * (height * 0.25f);
+
+              float py = horizonY - (baseHeight + musicHeight);
+              pSink->AddLine(D2D1::Point2F(g_imageBoxRect.left + i * stepX, py));
+            }
+
+            // 终点：右下角地平线 -> 闭合到底部
+            pSink->AddLine(D2D1::Point2F(g_imageBoxRect.right, horizonY));
+            pSink->AddLine(D2D1::Point2F(g_imageBoxRect.right, g_imageBoxRect.bottom)); // 封底
+            pSink->AddLine(D2D1::Point2F(g_imageBoxRect.left, g_imageBoxRect.bottom));  // 封底
+            pSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            pSink->Close();
+            pSink->Release();
+
+            // A. 填充黑色 (挡住后面的网格和太阳底部)
+            g_brush->SetColor(D2D1::ColorF(0x050010));
+            g_renderTarget->FillGeometry(pMountainGeo, g_brush);
+
+            // B. 描边霓虹粉 (Neon Pink)
+            // 随低音变亮
+            g_brush->SetColor(D2D1::ColorF(0xFF00FF)); // Magenta
+            g_brush->SetOpacity(0.8f + bass * 0.2f);
+            g_renderTarget->DrawGeometry(pMountainGeo, g_brush, 1.5f);
+
+            pMountainGeo->Release();
+          }
+
+          // ======================================================
+          // 4. 绘制透视网格 (Perspective Grid)
+          // ======================================================
+          // 限制在山脉下方的区域绘制 (其实因为山脉填充了黑色，直接画在最底层也行，但这里画在最上层会有“扫描”感)
+          // 为了更有质感，我们只画地平线以下的区域
+
+          // 地面渐变底色 (深紫 -> 黑)
+          ID2D1LinearGradientBrush* pGridBgBrush = nullptr;
+          skyStops[0].position = 0.0f; skyStops[0].color = D2D1::ColorF(0x2a003b); // 地平线紫
+          skyStops[1].position = 1.0f; skyStops[1].color = D2D1::ColorF(0x000000); // 近处黑
+          g_renderTarget->CreateGradientStopCollection(skyStops, 2, &pSkyColl);
+          g_renderTarget->CreateLinearGradientBrush(
+            D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, horizonY), D2D1::Point2F(0, g_imageBoxRect.bottom)),
+            pSkyColl, &pGridBgBrush);
+
+          if (pGridBgBrush) {
+            // 先画一层半透明地面，让网格线更清晰
+            g_brush->SetOpacity(0.8f);
+            g_renderTarget->FillRectangle(D2D1::RectF(g_imageBoxRect.left, horizonY, g_imageBoxRect.right, g_imageBoxRect.bottom), pGridBgBrush);
+            pGridBgBrush->Release();
+          }
+          pSkyColl->Release();
+
+          // 网格线：青色 (Cyan)
+          g_brush->SetColor(D2D1::ColorF(0x00FFFF));
+
+          // 纵向线 (放射状)
+          int numVLines = 10;
           for (int i = -numVLines; i <= numVLines; i++) {
-            // 简单的透视放射
-            float bottomX = cx + i * (width / numVLines) * 2.0f; // 底部很宽
+            float bottomX = cx + i * (width / numVLines) * 3.5f; // 底部散开更宽
+            // 根据距离中心的远近计算透明度 (中间亮，两边暗)
+            float distAlpha = 1.0f - abs(i) / (float)numVLines;
+            g_brush->SetOpacity(distAlpha * 0.5f);
             g_renderTarget->DrawLine(D2D1::Point2F(cx, horizonY), D2D1::Point2F(bottomX, g_imageBoxRect.bottom), g_brush, 1.0f);
           }
 
-          // 横向线 (随时间向 viewer 移动)
-          // speed 随低音变化，bass 越强跑得越快
-          float speed = (g_musicTime * 0.8f) + bass * 0.1f;
-          // 取小数部分模拟无限循环
+          // 横向线 (向屏幕外移动)
+          // 速度随低音加快
+          float speed = (float)GetTickCount() / 1000.0f + bass * 0.5f;
           float offset = speed - floor(speed);
 
-          // 透视公式：y = 1 / z
-          // 用简化的指数分布来模拟近大远小
-          for (float i = 0.0f; i < 1.0f; i += 0.1f) {
+          for (float i = 0.0f; i < 1.0f; i += 0.08f) {
             float z = i + offset;
-            if (z > 1.0f) z -= 1.0f;
+            if (z > 1.0f) z -= 1.0f; // 循环
 
-            // z=0 是地平线，z=1 是屏幕底部
-            // 使用 pow 让靠近地平线的线更密集
-            float drawY = horizonY + pow(z, 2.5f) * (height * 0.45f);
+            // 透视映射：越近间距越大
+            float drawY = horizonY + pow(z, 3.0f) * (height * 0.4f);
 
+            // 远处透明，近处亮
+            g_brush->SetOpacity(z * z);
             g_renderTarget->DrawLine(
               D2D1::Point2F(g_imageBoxRect.left, drawY),
               D2D1::Point2F(g_imageBoxRect.right, drawY),
               g_brush,
-              1.0f + z * 1.5f // 越近线越粗
+              1.0f + z * 1.0f // 近处线粗
             );
           }
 
-          g_brush->SetOpacity(1.0f);
           g_renderTarget->PopAxisAlignedClip();
         }
 
         // --- 液态生物 (SPEC_SYMBIOTE) ---
         else if (g_spectrumMode == SPEC_SYMBIOTE) {
+          g_renderTarget->PushAxisAlignedClip(g_imageBoxRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
           float cx = (g_imageBoxRect.left + g_imageBoxRect.right) / 2.0f;
           float cy = (g_imageBoxRect.top + g_imageBoxRect.bottom) / 2.0f;
 
-          // 1. 背景：深色背景，让发光生物更显眼
+          // 1. 背景：纯黑
           g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
           g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
 
-          // 2. 分析音乐能量
-          float bass = (fft[1] + fft[2] + fft[3]) / 3.0f;
-          // 限制最大形变，防止生物炸裂
-          if (bass > 0.8f) bass = 0.8f;
+          // 2. 音频分析
+          float bass = 0.0f, mid = 0.0f, high = 0.0f;
+          if (g_stream && g_isPlaying) {
+            for (int k = 1; k < 8; k++) bass += fft[k]; bass /= 7.0f;
+            for (int k = 20; k < 60; k++) mid += fft[k]; mid /= 40.0f;
+            for (int k = 100; k < 200; k++) high += fft[k]; high /= 100.0f;
+          }
+          bass = std::min(bass * 3.0f, 1.0f); // 低音增强
 
-          // 3. 计算生物形状 (16个控制点)
-          const int points = 16;
+          // 动态颜色：随时间循环 (青 -> 紫 -> 红)
+          float timeHue = g_musicTime * 0.1f;
+          D2D1_COLOR_F mainColor = HsvToRgb(timeHue, 0.8f, 1.0f);
+          D2D1_COLOR_F coreColor = HsvToRgb(timeHue + 0.5f, 0.5f, 1.0f); // 核心对比色
+
+          // 3. 计算生物形状 (120个点，更细腻)
+          const int points = 120;
           D2D1_POINT_2F vertices[points];
+          float baseRadius = 50.0f + bass * 20.0f;
 
-          // 基础半径随低音呼吸 (60 ~ 90)
-          float baseRadius = 60.0f + bass * 30.0f;
+          // 旋转整个生物
+          float rotation = g_musicTime * 0.5f;
 
           for (int i = 0; i < points; i++) {
-            // 映射 FFT 能量到顶点
-            int fftIdx = i * 2; // 取低频段
-            float val = fft[fftIdx] * 80.0f;
-            if (val > 50.0f) val = 50.0f; // 削峰
+            float anglePercent = (float)i / points;
+            float angle = anglePercent * 2 * 3.14159f + rotation;
 
-            // 半径 = 基础呼吸 + 局部频率突起
-            float r = baseRadius + val;
+            // 蠕动波
+            float wave = sin(angle * 5.0f + g_musicTime * 3.0f) * 5.0f;
 
-            // 自身缓慢旋转
-            float angle = (float)i / points * 2 * 3.14159f + g_musicTime * 0.5f;
+            // 尖刺 (Spikes) - 随中频剧烈变化
+            int fftIdx = (int)(abs(anglePercent - 0.5f) * 2.0f * 80.0f);
+            float spike = fft[fftIdx] * 120.0f * (0.5f + mid);
 
+            float r = baseRadius + wave + spike;
             vertices[i].x = cx + cos(angle) * r;
             vertices[i].y = cy + sin(angle) * r;
+
+            // --- 【新增】粒子发射源 ---
+            // 在尖刺顶端发射粒子 阈值： 10.0f  概率：40%
+            if (spike > 10.0f && (rand() % 100) < 40) {
+              VenomParticle vp;
+              vp.x = vertices[i].x;
+              vp.y = vertices[i].y;
+              // 向外飞溅
+              vp.vx = cos(angle) * (1.0f + rand() % 3);
+              vp.vy = sin(angle) * (1.0f + rand() % 3);
+              vp.life = 1.0f;
+              vp.size = 1.0f + rand() % 3;
+              vp.color = mainColor; // 粒子颜色跟随主体
+              g_venomParticles.push_back(vp);
+            }
           }
 
-          // 4. 构建贝塞尔路径
+          // 4. 绘制粒子 (画在生物后面，营造氛围)
+          for (auto it = g_venomParticles.begin(); it != g_venomParticles.end(); ) {
+            it->x += it->vx;
+            it->y += it->vy;
+            it->life -= 0.02f;
+            it->size *= 0.98f; // 慢慢变小
+
+            if (it->life <= 0) {
+              it = g_venomParticles.erase(it);
+            }
+            else {
+              g_brush->SetColor(it->color);
+              g_brush->SetOpacity(it->life * 0.8f);
+              g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(it->x, it->y), it->size, it->size), g_brush);
+              ++it;
+            }
+          }
+
+          // 5. 构建路径
           ID2D1PathGeometry* pGeo = nullptr;
           g_d2dFactory->CreatePathGeometry(&pGeo);
-          ID2D1GeometrySink* pSink = nullptr;
-          pGeo->Open(&pSink);
+          if (pGeo) {
+            ID2D1GeometrySink* pSink = nullptr;
+            pGeo->Open(&pSink);
+            pSink->SetFillMode(D2D1_FILL_MODE_WINDING);
 
-          pSink->SetFillMode(D2D1_FILL_MODE_WINDING);
+            D2D1_POINT_2F startPt = D2D1::Point2F((vertices[points - 1].x + vertices[0].x) / 2, (vertices[points - 1].y + vertices[0].y) / 2);
+            pSink->BeginFigure(startPt, D2D1_FIGURE_BEGIN_FILLED);
 
-          // 平滑连接算法：取每两个顶点的中点作为路径的起点/终点，顶点作为贝塞尔控制点
-          // 这样曲线绝对圆滑，不会有尖角
-          D2D1_POINT_2F pLast = vertices[points - 1];
-          D2D1_POINT_2F pFirst = vertices[0];
-          D2D1_POINT_2F startPt = D2D1::Point2F((pLast.x + pFirst.x) / 2, (pLast.y + pFirst.y) / 2);
+            for (int i = 0; i < points; i++) {
+              D2D1_POINT_2F pCurrent = vertices[i];
+              D2D1_POINT_2F pNext = vertices[(i + 1) % points];
+              D2D1_POINT_2F mid = D2D1::Point2F((pCurrent.x + pNext.x) / 2, (pCurrent.y + pNext.y) / 2);
+              pSink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(pCurrent, mid));
+            }
+            pSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            pSink->Close();
+            pSink->Release();
 
-          pSink->BeginFigure(startPt, D2D1_FIGURE_BEGIN_FILLED);
+            // 6. 【新增】核心能量发光 (Pulsing Core)
+            // 径向渐变：中心亮白 -> 边缘主体色 -> 外圈透明
+            ID2D1RadialGradientBrush* pCoreBrush = nullptr;
+            ID2D1GradientStopCollection* pStops = nullptr;
+            D2D1_GRADIENT_STOP stops[3];
+            stops[0].position = 0.0f; stops[0].color = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.9f); // 核白
+            stops[1].position = 0.6f; stops[1].color = mainColor; // 主体色
+            stops[2].position = 1.0f; stops[2].color = D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.8f); // 边缘黑
 
-          for (int i = 0; i < points; i++) {
-            int next = (i + 1) % points;
-            D2D1_POINT_2F pCurrent = vertices[i];
-            D2D1_POINT_2F pNext = vertices[next];
-            D2D1_POINT_2F midPoint = D2D1::Point2F((pCurrent.x + pNext.x) / 2, (pCurrent.y + pNext.y) / 2);
+            g_renderTarget->CreateGradientStopCollection(stops, 3, &pStops);
+            if (pStops) {
+              g_renderTarget->CreateRadialGradientBrush(
+                D2D1::RadialGradientBrushProperties(D2D1::Point2F(cx, cy), D2D1::Point2F(0, 0), baseRadius + 40, baseRadius + 40),
+                pStops, &pCoreBrush);
 
-            // 二次贝塞尔：控制点是原始顶点，终点是线段中点
-            pSink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(pCurrent, midPoint));
+              if (pCoreBrush) {
+                g_renderTarget->FillGeometry(pGeo, pCoreBrush); // 填充生物
+                pCoreBrush->Release();
+              }
+              pStops->Release();
+            }
+
+            // 7. 【新增】表皮闪电链 (Lightning)
+            // 在顶点之间随机连线，模拟电弧
+            if (bass > 0.3f) {
+              g_brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f));
+              g_brush->SetOpacity(0.7f);
+
+              for (int i = 0; i < 10; i++) { // 画10条随机闪电
+                int idx1 = rand() % points;
+                int idx2 = (idx1 + 10 + rand() % 20) % points; // 连向远处的点
+                // 只有当两个点都是尖刺时才连线 (距离圆心够远)
+                float d1 = sqrt(pow(vertices[idx1].x - cx, 2) + pow(vertices[idx1].y - cy, 2));
+                if (d1 > baseRadius + 10.0f) {
+                  g_renderTarget->DrawLine(vertices[idx1], vertices[idx2], g_brush, 1.5f);
+                }
+              }
+            }
+
+            // 8. 强力描边 (Glowing Rim)
+            // 颜色稍微提亮一点
+            D2D1_COLOR_F rimColor = mainColor;
+            rimColor.r += 0.3f; rimColor.g += 0.3f; rimColor.b += 0.3f;
+            g_brush->SetColor(rimColor);
+            g_brush->SetOpacity(1.0f);
+            g_renderTarget->DrawGeometry(pGeo, g_brush, 2.0f);
+
+            pGeo->Release();
           }
 
-          pSink->EndFigure(D2D1_FIGURE_END_CLOSED);
-          pSink->Close();
-          SafeRelease(&pSink);
-
-          // 5. 创建径向渐变画笔 (实现变色+立体感)
-          // 核心颜色逻辑：
-          // Hue (色相): 随时间流逝(g_musicTime) + 低音瞬移(bass)
-          float hue = g_musicTime * 0.2f + bass * 0.2f;
-
-          // 内核颜色：高亮，低饱和度 (接近白)
-          D2D1_COLOR_F colorInner = HsvToRgb(hue, 0.4f, 1.0f);
-          // 外壳颜色：深色，高饱和度
-          D2D1_COLOR_F colorOuter = HsvToRgb(hue + 0.1f, 1.0f, 0.7f);
-
-          ID2D1GradientStopCollection* pGradientStops = nullptr;
-          D2D1_GRADIENT_STOP gradientStops[2];
-          gradientStops[0].color = colorInner;
-          gradientStops[0].position = 0.0f; // 中心
-          gradientStops[1].color = colorOuter;
-          gradientStops[1].position = 1.0f; // 边缘
-
-          g_renderTarget->CreateGradientStopCollection(
-            gradientStops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &pGradientStops);
-
-          ID2D1RadialGradientBrush* pRadBrush = nullptr;
-          if (pGradientStops) {
-            g_renderTarget->CreateRadialGradientBrush(
-              D2D1::RadialGradientBrushProperties(D2D1::Point2F(cx, cy), D2D1::Point2F(0, 0), baseRadius + 30.0f, baseRadius + 30.0f),
-              pGradientStops,
-              &pRadBrush
-            );
-          }
-
-          // 6. 绘制主体
-          if (pRadBrush) {
-            g_renderTarget->FillGeometry(pGeo, pRadBrush);
-            SafeRelease(&pRadBrush); // 释放临时画笔
-          }
-          SafeRelease(&pGradientStops); // 释放Stop集合
-
-          // 7. 绘制“果冻”高光 (模拟湿润质感)
-          // 在左上角画一个缩小的、半透明的白色版本
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
-          g_brush->SetOpacity(0.3f);
-
-          D2D1::Matrix3x2F highlightTrans =
-            D2D1::Matrix3x2F::Scale(0.7f, 0.7f, D2D1::Point2F(cx, cy)) *
-            D2D1::Matrix3x2F::Translation(-15.0f, -15.0f); // 向左上偏移
-
-          g_renderTarget->SetTransform(highlightTrans);
-          g_renderTarget->FillGeometry(pGeo, g_brush);
-          g_renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
-
-          // 8. 绘制外发光轮廓
-          // 颜色比主体更亮一点
-          g_brush->SetColor(HsvToRgb(hue, 0.6f, 1.0f));
-          g_brush->SetOpacity(0.8f);
-          g_renderTarget->DrawGeometry(pGeo, g_brush, 3.0f); // 描边粗一点
-
-          // 还原全局状态
           g_brush->SetOpacity(1.0f);
-          SafeRelease(&pGeo);
+          g_renderTarget->PopAxisAlignedClip();
         }
 
         // --- 激光唱针 (SPEC_VINYL) ---
@@ -3022,139 +3381,160 @@ void OnPaint()
 
         // --- 行星系统 (SPEC_PLANET) ---
         else if (g_spectrumMode == SPEC_PLANET) {
-
-          // 1. 基础参数
-          float boxW = g_imageBoxRect.right - g_imageBoxRect.left;
-          float boxH = g_imageBoxRect.bottom - g_imageBoxRect.top;
-          float cx = g_imageBoxRect.left + boxW / 2.0f;
-          float cy = g_imageBoxRect.top + boxH / 2.0f;
-          float maxRadius = std::min(boxW, boxH) / 2.0f;
-
-          // 2. 强制裁剪
           g_renderTarget->PushAxisAlignedClip(g_imageBoxRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-          // 3. 初始化星云粒子 (复用 g_planets)
-          // 需要很多粒子，所以如果数量少，就重新生成
-          if (!g_planetInit || g_planets.size() < 300) {
+          // 1. 深空背景 (带一点微弱的星光底色)
+          //g_brush->SetColor(D2D1::ColorF(0.02f, 0.02f, 0.05f));
+          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
+          g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
+
+          float cx = (g_imageBoxRect.left + g_imageBoxRect.right) / 2.0f;
+          float cy = (g_imageBoxRect.top + g_imageBoxRect.bottom) / 2.0f;
+          float maxRadius = (g_imageBoxRect.right - g_imageBoxRect.left) / 2.0f;
+
+          // 2. 初始化：构建银河旋臂 (Spiral Galaxy)
+          if (!g_planetInit || g_planets.size() < 500) { // 增加粒子数到 500
             g_planets.clear();
-            for (int i = 0; i < 300; i++) {
+            int arms = 3; // 3条旋臂
+            for (int i = 0; i < 500; i++) {
               Planet p;
-              p.angle = (float)(rand() % 360);
+              // 随机选择一条旋臂
+              float armOffset = (i % arms) * (360.0f / arms);
 
-              // 距离呈高斯分布，聚集在中间一圈
-              float rRatio = (float)(rand() % 100) / 100.0f;
-              // 让粒子更多分布在 0.3 ~ 0.9 的区域，形成环状
-              p.distance = maxRadius * (0.3f + rRatio * 0.6f);
+              // 距离：对数分布，越靠近中心密度越高
+              float rRatio = pow((float)(rand() % 100) / 100.0f, 1.5f);
+              p.distance = 20.0f + rRatio * (maxRadius - 20.0f);
 
-              // 速度差异化：内圈快，外圈慢 (开普勒定律模拟)
-              p.speed = (1.0f - rRatio) * 3.0f + 0.5f;
+              // 角度：基于距离产生螺旋 (距离越远，角度滞后越多)
+              // 螺旋公式：Angle = ArmOffset + Distance * Factor
+              p.angle = armOffset + p.distance * 1.5f;
+              // 加上随机散射，让旋臂蓬松一点
+              p.angle += (rand() % 40) - 20.0f;
 
-              p.size = 1.0f + (rand() % 20) / 10.0f; // 1.0 ~ 3.0 大小
+              // 速度：开普勒定律 (近快远慢)
+              p.speed = 100.0f / (p.distance + 10.0f);
 
-              // 颜色：冷暖色调混合 (冰蓝 -> 紫 -> 火红)
-              // 根据距离决定颜色：内圈热(红)，外圈冷(蓝)
-              float hue = 0.6f - (1.0f - rRatio) * 0.6f; // 0.6(蓝) -> 0.0(红)
-              if (hue < 0) hue += 1.0f;
+              p.size = 0.5f + (rand() % 20) / 10.0f; // 0.5 - 2.5
 
-              p.color = HsvToRgb(hue, 0.8f, 1.0f);
-              // 不需要尾迹，清空节省内存
+              // 颜色：银河配色 (中心金黄 -> 中间紫红 -> 边缘冰蓝)
+              if (p.distance < maxRadius * 0.3f)
+                p.color = D2D1::ColorF(1.0f, 0.9f, 0.6f); // 金
+              else if (p.distance < maxRadius * 0.6f)
+                p.color = D2D1::ColorF(0.8f, 0.2f, 0.5f); // 紫红
+              else
+                p.color = D2D1::ColorF(0.2f, 0.6f, 1.0f); // 冰蓝
+
               p.trail.clear();
-
               g_planets.push_back(p);
             }
             g_planetInit = true;
           }
 
-          // 4. 分析能量
-          float bass = (fft[1] + fft[2] + fft[3]) / 3.0f;     // 低音：控制斥力
-          float mid = (fft[10] + fft[20] + fft[30]) / 3.0f;  // 中音：控制颜色亮度
-          float treble = (fft[60] + fft[70] + fft[80]) / 3.0f;// 高音：控制自转速度
+          // 3. 音频分析
+          float bass = 0.0f, treble = 0.0f;
+          if (g_stream && g_isPlaying) {
+            for (int k = 1; k < 5; k++) bass += fft[k]; bass /= 4.0f;
+            for (int k = 50; k < 150; k++) treble += fft[k]; treble /= 100.0f;
+          }
+          float zoom = 1.0f + bass * 0.2f; // 低音震动缩放
 
-          // 限制一下，防止炸飞
-          if (bass > 0.8f) bass = 0.8f;
+          // 4. 绘制中心黑洞/类星体喷流 (Quasar Jet)
+          // 当低音强时，向上下喷射粒子束
+          if (bass > 0.2f) {
+            float jetH = bass * 120.0f; // 喷射高度
+            float jetW = 4.0f + bass * 10.0f; // 喷射宽度
 
-          // 5. 绘制背景
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
-          g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
+            // 使用渐变画笔画光束
+            ID2D1LinearGradientBrush* pJetBrush = nullptr;
+            D2D1_GRADIENT_STOP stops[2];
+            stops[0].position = 0.0f; stops[0].color = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.8f); // 中心白
+            stops[1].position = 1.0f; stops[1].color = D2D1::ColorF(0.0f, 0.5f, 1.0f, 0.0f); // 末端蓝透
 
-          // 6. 物理模拟与绘制循环
-          // 核心：所有粒子围绕中心旋转，且受低音斥力影响
+            ID2D1GradientStopCollection* pColl = nullptr;
+            g_renderTarget->CreateGradientStopCollection(stops, 2, &pColl);
 
-          for (int i = 0; i < g_planets.size(); i++) {
-            Planet& p = g_planets[i];
-
-            // --- A. 角度更新 (公转) ---
-            // 基础速度 + 高音加速
-            float currentSpeed = p.speed + treble * 15.0f;
-            p.angle += currentSpeed;
-            if (p.angle > 360.0f) p.angle -= 360.0f;
-
-            // --- B. 半径更新 (呼吸) ---
-            // 原始半径记录在 p.distance 里 (可以认为这是静止时的平衡位置)
-            // 动态半径 = 原始半径 + 低音斥力
-            // 斥力：越靠近中心(内圈)受到的推力越大
-            float push = bass * 80.0f * (maxRadius / p.distance);
-            float currentR = p.distance + push;
-
-            // 添加一点随机抖动 (Turbulence)
-            currentR += sin(g_musicTime * 5.0f + i) * 2.0f;
-
-            // --- C. 坐标计算 ---
-            float rad = p.angle * 3.14159f / 180.0f;
-
-            // 把它压扁一点点，做成 2.5D 的盘状
-            float x = cx + cos(rad) * currentR;
-            float y = cy + sin(rad) * currentR * 0.7f; // Y轴压缩 0.7
-
-            // --- D. 绘制粒子 ---
-            // 亮度：随中频闪烁
-            float alpha = 0.4f + mid * 2.0f;
-            if (alpha > 1.0f) alpha = 1.0f;
-
-            // 远近透视：Y轴在下方(前面)的粒子大且亮，上方的暗且小
-            float zScale = 1.0f + (sin(rad) * 0.3f); // 0.7 ~ 1.3
-            float drawSize = p.size * zScale;
-
-            // 如果低音很强，所有粒子变白 (高能反应)
-            D2D1_COLOR_F drawCol = p.color;
-            if (bass > 0.4f) {
-              drawCol.r += bass; drawCol.g += bass; drawCol.b += bass;
-            }
-
-            g_brush->SetColor(drawCol);
-            g_brush->SetOpacity(alpha);
-            g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x, y), drawSize, drawSize), g_brush);
-
-            // 偶尔画几条连接线 (星链效果)
-            // 只连接相邻的粒子，且距离较近时
-            if (i > 0) {
-              Planet& prev = g_planets[i - 1];
-              // 简单的距离判断，不用开方，优化性能
-              float dx = x - (cx + cos((prev.angle) * 3.14 / 180) * prev.distance); // 粗略估算
-              // 这里为了性能和视觉，只连接物理存储上相邻的粒子
-              // 实际上会形成一种杂乱的网状结构
-              if (abs(p.angle - prev.angle) < 10.0f && abs(p.distance - prev.distance) < 20.0f) {
-                g_renderTarget->DrawLine(D2D1::Point2F(x, y),
-                  D2D1::Point2F(cx + cos(prev.angle * 3.14 / 180) * (prev.distance + push),
-                    cy + sin(prev.angle * 3.14 / 180) * (prev.distance + push) * 0.7f),
-                  g_brush, 0.5f);
+            if (pColl) {
+              // 上喷流
+              g_renderTarget->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(cx, cy), D2D1::Point2F(cx, cy - jetH)),
+                pColl, &pJetBrush);
+              if (pJetBrush) {
+                g_renderTarget->FillRectangle(D2D1::RectF(cx - jetW / 2, cy - jetH, cx + jetW / 2, cy), pJetBrush);
+                pJetBrush->Release(); pJetBrush = nullptr;
               }
+
+              // 下喷流
+              g_renderTarget->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(cx, cy), D2D1::Point2F(cx, cy + jetH)),
+                pColl, &pJetBrush);
+              if (pJetBrush) {
+                g_renderTarget->FillRectangle(D2D1::RectF(cx - jetW / 2, cy, cx + jetW / 2, cy + jetH), pJetBrush);
+                pJetBrush->Release();
+              }
+              pColl->Release();
             }
           }
 
-          // 7. 绘制中心黑洞/类星体
-          // 它是能量的源头，也是吞噬者
-          float holeSize = maxRadius * 0.15f;
+          // 5. 绘制吸积盘 (高亮核心)
+          float coreSize = 10.0f + bass * 30.0f;
+          g_brush->SetColor(D2D1::ColorF(1.0f, 0.9f, 0.8f)); // 亮白核心
+          g_brush->SetOpacity(0.8f);
+          // 压扁的椭圆
+          g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), coreSize, coreSize * 0.4f), g_brush);
 
-          // 吸积盘光晕 (Accretion Disk Glow)
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::OrangeRed));
-          g_brush->SetOpacity(0.3f + bass * 0.5f); // 随低音爆闪
-          g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), holeSize * 1.5f, holeSize * 1.5f * 0.7f), g_brush);
 
-          // 黑洞本体
-          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
-          g_brush->SetOpacity(1.0f);
-          g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), holeSize, holeSize * 0.7f), g_brush);
+          // 6. 更新与绘制粒子 (旋涡)
+          for (auto& p : g_planets) {
+            // --- 运动 ---
+            // 旋转：基础速度 + 高音加速
+            p.angle += p.speed * (1.0f + treble * 5.0f);
+            if (p.angle > 360.0f) p.angle -= 360.0f;
+
+            // 呼吸：距离随低音微调
+            float currentR = p.distance * zoom;
+            // 旋涡吸入效果：稍微改变一点距离，模拟流动
+            // (这里为了稳定先不做吸入，只做震动)
+
+            // --- 坐标计算 (3D 倾斜盘面) ---
+            float rad = p.angle * 3.14159f / 180.0f;
+            float x = cx + cos(rad) * currentR;
+            float y = cy + sin(rad) * currentR * 0.4f; // 压得很扁，倾斜感强
+
+            // --- 拖尾逻辑 (Trails) ---
+            // 只有内圈快速粒子才画拖尾，节省性能且好看
+            if (p.distance < maxRadius * 0.5f) {
+              // 添加当前点
+              p.trail.push_back(D2D1::Point2F(x, y));
+              if (p.trail.size() > 5) p.trail.erase(p.trail.begin()); // 保持尾巴长度为5
+
+              // 绘制拖尾
+              if (p.trail.size() > 1) {
+                g_brush->SetColor(p.color);
+                for (size_t k = 0; k < p.trail.size() - 1; k++) {
+                  // 尾巴越来越细，越来越透
+                  float tailAlpha = (float)k / p.trail.size() * 0.5f;
+                  g_brush->SetOpacity(tailAlpha);
+                  g_renderTarget->DrawLine(p.trail[k], p.trail[k + 1], g_brush, p.size);
+                }
+              }
+            }
+
+            // --- 绘制粒子本体 ---
+            // 深度感：Y轴在下方(近处)的亮，上方(远处)的暗
+            float zDepth = sin(rad); // -1 ~ 1
+            float depthAlpha = 0.5f + zDepth * 0.4f; // 0.1 ~ 0.9
+
+            // 低音爆发时全体变亮
+            float finalAlpha = depthAlpha + bass * 0.5f;
+            if (finalAlpha > 1.0f) finalAlpha = 1.0f;
+
+            g_brush->SetColor(p.color);
+            g_brush->SetOpacity(finalAlpha);
+
+            // 近大远小
+            float drawSize = p.size * (0.8f + zDepth * 0.3f);
+            g_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x, y), drawSize, drawSize), g_brush);
+          }
 
           g_brush->SetOpacity(1.0f);
           g_renderTarget->PopAxisAlignedClip();
@@ -3546,6 +3926,146 @@ void OnPaint()
 
           g_renderTarget->PopAxisAlignedClip();
           g_brush->SetOpacity(1.0f);
+        }
+
+        // --- 网点球体 (SPEC_SPHERE) ---
+        if (g_spectrumMode == SPEC_SPHERE) {
+          g_renderTarget->PushAxisAlignedClip(g_imageBoxRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+          // 1. 深空黑背景
+          g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
+          g_renderTarget->FillRectangle(g_imageBoxRect, g_brush);
+
+          // 2. 初始化 3D 粒子 (只做一次)
+          if (!g_star3DInit) {
+            g_stars3D.clear();
+            // 1800 个粒子，勾勒清晰球体
+            for (int i = 0; i < 1800; i++) {
+              Star3D p;
+              // Fibonacci Sphere 均匀分布算法
+              float k = i + 0.5f;
+              float phi = acos(1.0f - 2.0f * k / 1800.0f);
+              float theta = 3.14159f * (1.0f + sqrt(5.0f)) * k;
+
+              // 固定半径 = 完美的圆球
+              p.baseRadius = 85.0f;
+
+              p.x = p.baseRadius * sin(phi) * cos(theta);
+              p.y = p.baseRadius * sin(phi) * sin(theta);
+              p.z = p.baseRadius * cos(phi);
+
+              p.isExploding = false;
+              p.size = 1.0f; // 极小均匀粒子
+
+              // 注意：不再需要给粒子单独赋值固定颜色了，因为我们会全局变色
+              // p.color 在这里可以忽略
+
+              g_stars3D.push_back(p);
+            }
+            g_star3DInit = true;
+          }
+
+          // 3. 音频驱动 & 颜色更新
+          float fft[1024];
+          float bass = 0.0f;
+          float beat = 0.0f;
+          if (g_stream && g_isPlaying) {
+            BASS_ChannelGetData(g_stream, fft, BASS_DATA_FFT2048);
+            for (int k = 1; k < 15; k++) bass += fft[k];
+            bass /= 14.0f;
+            for (int k = 50; k < 200; k++) beat += fft[k];
+            beat /= 150.0f;
+          }
+          bass *= 3.0f; // 呼吸强度
+
+          // --- 【核心修改：颜色流转逻辑】 ---
+          // 每一帧让色相增加一点点 (0.002f 是变色速度，越大变得越快)
+          g_sphereHue += 0.002f;
+          if (g_sphereHue > 1.0f) g_sphereHue -= 1.0f;
+
+          // 使用 HsvToRgb 生成当前帧的颜色
+          // Hue: 动态  Saturation: 0.85 (鲜艳)  Value: 1.0 (最亮)
+          // (注意：你的代码前面必须有 HsvToRgb 函数定义，如果没有请加上)
+          D2D1_COLOR_F globalColor = HsvToRgb(g_sphereHue, 0.85f, 1.0f);
+          // -------------------------------
+
+          float cx = (g_imageBoxRect.left + g_imageBoxRect.right) / 2.0f;
+          float cy = (g_imageBoxRect.top + g_imageBoxRect.bottom) / 2.0f;
+
+          // 4. 旋转参数更新
+          g_sphereRotationY += 0.008f + bass * 0.02f;
+          g_sphereRotationX += 0.004f;
+
+          // 5. 渲染循环
+          for (auto& p : g_stars3D) {
+            float px = p.x;
+            float py = p.y;
+            float pz = p.z;
+
+            // --- 逻辑 A: 爆发 ---
+            if (p.isExploding) {
+              p.x += p.vx;
+              p.y += p.vy;
+              p.z += p.vz;
+              if (abs(p.x) > 350 || abs(p.y) > 350 || abs(p.z) > 350) {
+                p.isExploding = false;
+                float currentLen = sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+                float scale = p.baseRadius / currentLen;
+                p.x *= scale; p.y *= scale; p.z *= scale;
+              }
+            }
+            // --- 逻辑 B: 呼吸 ---
+            else {
+              float scale = 1.0f + bass * 0.6f;
+              px *= scale;
+              py *= scale;
+              pz *= scale;
+
+              if (beat > 0.35f && (rand() % 2000) < 5) {
+                p.isExploding = true;
+                float speed = 3.0f + beat * 6.0f;
+                float len = sqrt(px * px + py * py + pz * pz);
+                p.vx = (px / len) * speed;
+                p.vy = (py / len) * speed;
+                p.vz = (pz / len) * speed;
+              }
+            }
+
+            // --- 3D 旋转 ---
+            float cosY = cos(g_sphereRotationY), sinY = sin(g_sphereRotationY);
+            float x1 = px * cosY - pz * sinY;
+            float z1 = px * sinY + pz * cosY;
+
+            float cosX = cos(g_sphereRotationX), sinX = sin(g_sphereRotationX);
+            float y2 = py * cosX - z1 * sinX;
+            float z2 = py * sinX + z1 * cosX;
+
+            // --- 透视投影 ---
+            float fov = 280.0f;
+            float scale2D = fov / (fov + z2);
+            float drawX = cx + x1 * scale2D;
+            float drawY = cy + y2 * scale2D;
+            float drawSize = p.size * scale2D;
+
+            if (z2 > -fov) {
+              // 【核心修改：使用全局流转色】
+              g_brush->SetColor(globalColor);
+
+              // 深度透明度
+              float depthAlpha = (1.0f - (z2 / 200.0f));
+              if (depthAlpha > 1.0f) depthAlpha = 1.0f;
+              if (depthAlpha < 0.15f) depthAlpha = 0.15f;
+
+              // 呼吸高亮
+              g_brush->SetOpacity(depthAlpha * (0.6f + bass * 0.4f));
+
+              D2D1_ELLIPSE star = D2D1::Ellipse(D2D1::Point2F(drawX, drawY), drawSize, drawSize);
+              g_renderTarget->FillEllipse(star, g_brush);
+            }
+          }
+
+          g_brush->SetOpacity(1.0f);
+          g_renderTarget->PopAxisAlignedClip();
         }
         // ... (请确保所有其他频谱模式代码都在这里) ... 9527
         // 简单起见，假设保留了原代码的频谱逻辑，这里为了编译通过，添加了结束括号
