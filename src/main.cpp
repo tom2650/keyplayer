@@ -371,6 +371,8 @@ void OpenAndPlayFile(const std::wstring& filePath);
 void UpdateAppTitle(HWND hwnd);
 void UpdateTitleBarTheme(HWND hwnd);
 int CountLines(const std::wstring& text, float maxWidth, IDWriteTextFormat* pFormat, IDWriteFactory* pFactory);
+void SaveConfig();
+void LoadConfig();
 
 // ============================================================================
 // 窗口过程
@@ -931,6 +933,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return TRUE;
   }
   case WM_DESTROY:
+    SaveConfig(); // [新增] 保存所有状态
     DiscardGraphicsResources();
     SafeRelease(&g_d2dFactory); SafeRelease(&g_dwriteFactory);
     SafeRelease(&g_textFormat); SafeRelease(&g_textFormatIcon); SafeRelease(&g_textFormatCenter); SafeRelease(&g_textFormatSmall); SafeRelease(&g_textFormatLyric);
@@ -1104,15 +1107,6 @@ bool ScanFolderForAudio(const std::wstring& folderPath) {
   std::sort(g_playlist.begin(), g_playlist.end(), [](const std::wstring& a, const std::wstring& b) {
     return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
     });
-
-  // 保存路径到配置
-  if (!g_playlist.empty()) {
-    wchar_t iniPath[MAX_PATH];
-    GetModuleFileNameW(NULL, iniPath, MAX_PATH);
-    PathRemoveFileSpecW(iniPath);
-    PathAppendW(iniPath, L"config.ini");
-    WritePrivateProfileStringW(L"Settings", L"LastFolder", folderPath.c_str(), iniPath);
-  }
 
   return true; // 成功
 }
@@ -4804,6 +4798,109 @@ HRESULT LoadAlbumArtFromAudio(ID2D1RenderTarget* pRT, IWICImagingFactory* pWIC, 
   } return hr;
 }
 
+void SaveConfig() {
+  wchar_t iniPath[MAX_PATH];
+  GetModuleFileNameW(NULL, iniPath, MAX_PATH);
+  PathRemoveFileSpecW(iniPath);
+  PathAppendW(iniPath, L"config.ini");
+
+  // 1. 基础设置
+  WritePrivateProfileStringW(L"Settings", L"Volume", std::to_wstring((int)(g_volume * 100)).c_str(), iniPath);
+  WritePrivateProfileStringW(L"Settings", L"PlayMode", std::to_wstring(g_playMode).c_str(), iniPath);
+  WritePrivateProfileStringW(L"Settings", L"SpectrumMode", std::to_wstring(g_spectrumMode).c_str(), iniPath);
+
+  // 2. 界面状态
+  WritePrivateProfileStringW(L"Settings", L"ShowLyrics", std::to_wstring(g_showLyrics ? 1 : 0).c_str(), iniPath);
+  WritePrivateProfileStringW(L"Settings", L"DarkMode", std::to_wstring(g_isDarkMode ? 1 : 0).c_str(), iniPath);
+  WritePrivateProfileStringW(L"Settings", L"SimpleMode", std::to_wstring(g_isSimpleMode ? 1 : 0).c_str(), iniPath);
+
+  // 3. 播放记忆（核心）
+  // 只有当前有歌单时才保存，防止误清空
+  if (!g_playlist.empty()) {
+    // 保存当前文件夹路径 (用于下次扫描)
+    // 获取第一首歌的目录作为基准
+    wchar_t folderPath[MAX_PATH];
+    wcscpy_s(folderPath, g_playlist[0].c_str());
+    PathRemoveFileSpecW(folderPath);
+    WritePrivateProfileStringW(L"Settings", L"LastFolder", folderPath, iniPath);
+
+    // 保存当前正在播放的具体文件路径 (比保存 index 更安全，防止文件增删导致 index 错位)
+    if (g_currentIndex >= 0 && g_currentIndex < (int)g_playlist.size()) {
+      WritePrivateProfileStringW(L"Settings", L"LastFile", g_playlist[g_currentIndex].c_str(), iniPath);
+    }
+
+    // 保存播放进度 (字节数)
+    QWORD pos = 0;
+    if (g_stream) pos = BASS_ChannelGetPosition(g_stream, BASS_POS_BYTE);
+    WritePrivateProfileStringW(L"Settings", L"LastPos", std::to_wstring(pos).c_str(), iniPath);
+  }
+}
+
+void LoadConfig() {
+  wchar_t iniPath[MAX_PATH];
+  GetModuleFileNameW(NULL, iniPath, MAX_PATH);
+  PathRemoveFileSpecW(iniPath);
+  PathAppendW(iniPath, L"config.ini");
+
+  // 1. 读取基础设置
+  int vol = GetPrivateProfileIntW(L"Settings", L"Volume", 20, iniPath); // 默认 20%
+  g_volume = vol / 100.0f;
+
+  g_playMode = GetPrivateProfileIntW(L"Settings", L"PlayMode", PM_ORDER, iniPath);
+  g_spectrumMode = GetPrivateProfileIntW(L"Settings", L"SpectrumMode", SPEC_NONE, iniPath);
+
+  g_showLyrics = GetPrivateProfileIntW(L"Settings", L"ShowLyrics", 0, iniPath) == 1;
+  g_isDarkMode = GetPrivateProfileIntW(L"Settings", L"DarkMode", 0, iniPath) == 1; // 默认浅色
+  g_isSimpleMode = GetPrivateProfileIntW(L"Settings", L"SimpleMode", 0, iniPath) == 1;
+
+  // 2. 读取播放记忆
+  wchar_t lastFolder[MAX_PATH] = { 0 };
+  GetPrivateProfileStringW(L"Settings", L"LastFolder", L"", lastFolder, MAX_PATH, iniPath);
+
+  wchar_t lastFile[MAX_PATH] = { 0 };
+  GetPrivateProfileStringW(L"Settings", L"LastFile", L"", lastFile, MAX_PATH, iniPath);
+
+  // 读取进度 (以字符串形式读取大整数)
+  wchar_t lastPosStr[64] = { 0 };
+  GetPrivateProfileStringW(L"Settings", L"LastPos", L"0", lastPosStr, 64, iniPath);
+  QWORD lastPos = _wcstoi64(lastPosStr, nullptr, 10);
+
+  // 3. 执行恢复逻辑
+  if (wcslen(lastFolder) > 0 && PathFileExistsW(lastFolder)) {
+    // 扫描目录
+    if (ScanFolderForAudio(lastFolder)) {
+      if (!g_playlist.empty()) {
+        // 寻找上次播放的那首歌
+        int targetIndex = 0;
+        for (int i = 0; i < (int)g_playlist.size(); i++) {
+          if (g_playlist[i] == lastFile) {
+            targetIndex = i;
+            break;
+          }
+        }
+
+        // 如果是随机模式，需要立刻以这首歌为起点初始化洗牌列表
+        // 这样能保证用户下次点“下一首”是随机的，而不是顺序的
+        if (g_playMode == PM_SHUFFLE) {
+          UpdateShuffleList(targetIndex);
+        }
+
+        // 播放并暂停 (false 表示不立即自动播放，如果你想自动播改成 true)
+        // 建议 false，防止用户下次打开被吓一跳
+        PlayTrackByIndex(targetIndex, false);
+
+        // 恢复进度
+        if (g_stream && lastPos > 0) {
+          BASS_ChannelSetPosition(g_stream, lastPos, BASS_POS_BYTE);
+          // 更新一下时间显示
+          g_musicTime = BASS_ChannelBytes2Seconds(g_stream, lastPos);
+          g_smoothTime = g_musicTime;
+        }
+      }
+    }
+  }
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
   const wchar_t* MUTEX_NAME = L"MyMusicPlayer_Unique_Mutex_A46_ProgressBar";
@@ -4855,34 +4952,55 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
   int winW = rc.right - rc.left, winH = rc.bottom - rc.top; int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
   g_hwnd = CreateWindowExW(0, L"D2D_A42_Wave", L"KeyPlayer\u3000", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, (screenW - winW) / 2, (screenH - winH) / 2, winW, winH, nullptr, nullptr, hInstance, nullptr);
 
-  // [新增] 允许接收拖拽文件
+  // 允许接收拖拽文件
   DragAcceptFiles(g_hwnd, TRUE);
 
-  ShowWindow(g_hwnd, nCmdShow); SetTimer(g_hwnd, IDT_TIMER_PLAYCHECK, 500, nullptr); SetTimer(g_hwnd, IDT_TIMER_UI, 16, nullptr);
-  int argc = 0; LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  if (argv && argc > 1) {
-    std::wstring filePath = argv[1]; wchar_t folderPath[MAX_PATH]; wcscpy_s(folderPath, filePath.c_str()); PathRemoveFileSpecW(folderPath);
-    ScanFolderForAudio(folderPath);
-    int targetIndex = 0; for (size_t i = 0; i < g_playlist.size(); i++) { if (g_playlist[i] == filePath) { targetIndex = (int)i; break; } }
-    if (!g_playlist.empty()) PlayTrackByIndex(targetIndex, true);
+  // ======================= [修改开始：配置加载与状态恢复] =======================
+
+  // 1. 读取配置 (这里会恢复 g_volume, g_playMode 等，并尝试加载上次的歌单和进度)
+  LoadConfig();
+
+  // 2. 检查是否是极简模式，如果是，需要立即调整窗口大小
+  if (g_isSimpleMode) {
+    int newLogicalW = 270; int newLogicalH = 305;
+    HDC hdc = GetDC(g_hwnd);
+    int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    ReleaseDC(g_hwnd, hdc);
+
+    int physW = MulDiv(newLogicalW, dpiX, 96);
+    int physH = MulDiv(newLogicalH, dpiY, 96);
+
+    DWORD dwStyle = GetWindowLong(g_hwnd, GWL_STYLE);
+    RECT rc = { 0, 0, physW, physH };
+    AdjustWindowRect(&rc, dwStyle, FALSE);
+
+    // 调整窗口大小
+    SetWindowPos(g_hwnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   }
-  else {
-    wchar_t iniPath[MAX_PATH];
-    GetModuleFileNameW(NULL, iniPath, MAX_PATH);
-    PathRemoveFileSpecW(iniPath);
-    PathAppendW(iniPath, L"config.ini");
 
-    wchar_t lastFolder[MAX_PATH] = { 0 };
-    GetPrivateProfileStringW(L"Settings", L"LastFolder", L"", lastFolder, MAX_PATH, iniPath);
+  // 3. 恢复视觉状态 (深色/浅色主题，标题栏音量)
+  UpdateTitleBarTheme(g_hwnd);
+  UpdateAppTitle(g_hwnd);
 
-    if (wcslen(lastFolder) > 0 && PathFileExistsW(lastFolder)) {
-      // 同样进行检查，如果上次的目录现在超过999了，就不加载，避免启动卡死
-      if (ScanFolderForAudio(lastFolder)) {
-        if (!g_playlist.empty()) PlayTrackByIndex(0, false);
-      }
-    }
+  // 4. 处理命令行参数 (比如用户双击文件打开软件)
+  // 注意：如果这里有参数，OpenAndPlayFile 会清空 LoadConfig 加载的旧歌单，优先播放用户指定的文件
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argv && argc > 1) {
+    std::wstring filePath = argv[1];
+    OpenAndPlayFile(filePath);
   }
   if (argv) LocalFree(argv);
+
+  // 5. 显示窗口 (放在所有调整之后，防止闪烁)
+  ShowWindow(g_hwnd, nCmdShow);
+
+  // ======================= [修改结束] =======================
+
+  SetTimer(g_hwnd, IDT_TIMER_PLAYCHECK, 500, nullptr);
+  SetTimer(g_hwnd, IDT_TIMER_UI, 16, nullptr);
+
   MSG msg = {}; while (GetMessageW(&msg, nullptr, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
   SafeRelease(&g_wicFactory); SafeRelease(&g_textFormatCenter); SafeRelease(&g_textFormat); SafeRelease(&g_textFormatIcon); SafeRelease(&g_textFormatSmall); SafeRelease(&g_textFormatLyric);
   SafeRelease(&g_dwriteFactory); SafeRelease(&g_d2dFactory); SafeRelease(&g_brushHighlight); SafeRelease(&g_brushDim); SafeRelease(&g_brushSpectrum);
