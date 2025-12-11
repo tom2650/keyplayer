@@ -263,6 +263,8 @@ bool g_isSimpleMode = false;
 bool g_isDarkMode = false;
 bool g_showLyrics = false;
 bool g_isMinimized = false;          // 最小化停止绘制
+bool g_isDragging = false;           // 是否正在拖动进度条
+bool g_wasPlayingBeforeDrag = false; // 拖动开始前是否正在播放
 
 int   g_spectrumMode = SPEC_NONE;
 
@@ -485,7 +487,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     else if (wParam == IDT_TIMER_UI) {
       if (g_isMinimized) return 0;
-      if (g_stream && g_isPlaying) {
+      if (g_stream && g_isPlaying && !g_isDragging) {
         QWORD pos = BASS_ChannelGetPosition(g_stream, BASS_POS_BYTE);
         g_musicTime = BASS_ChannelBytes2Seconds(g_stream, pos);
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -745,18 +747,40 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
   {
     POINT ptPixel = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
     D2D1_POINT_2F ptDip = DpiHelper::PixelsToDips(ptPixel, g_renderTarget);
+
+    // === 【修改】进度条按下逻辑 ===
     if (!g_isSimpleMode && IsPointInRect(ptDip, g_progressBarRect) && g_stream) {
+      g_isDragging = true; // 标记开始拖拽
+
+      // 记录当前是不是正在播放，以便松开鼠标时恢复
+      g_wasPlayingBeforeDrag = (BASS_ChannelIsActive(g_stream) == BASS_ACTIVE_PLAYING);
+
+      // 【核心】按下瞬间暂停播放！这能彻底消除刺啦声
+      BASS_ChannelPause(g_stream);
+
+      // 捕获鼠标，这样即使鼠标拖出窗口范围，也能收到 UP 消息
+      SetCapture(hwnd);
+
       float barWidth = g_progressBarRect.right - g_progressBarRect.left;
       if (barWidth > 0) {
-        float ratio = (ptDip.x - g_progressBarRect.left) / barWidth; if (ratio < 0) ratio = 0; if (ratio > 1) ratio = 1;
+        float ratio = (ptDip.x - g_progressBarRect.left) / barWidth;
+        if (ratio < 0) ratio = 0; if (ratio > 1) ratio = 1;
+
+        // 设置位置（此时是暂停状态，但 BASS 会解码该位置数据，频谱依然有效）
         BASS_ChannelSetPosition(g_stream, (QWORD)(BASS_ChannelGetLength(g_stream, BASS_POS_BYTE) * ratio), BASS_POS_BYTE);
+
+        // 立即更新时间变量，保证 UI 响应
         g_musicTime = BASS_ChannelBytes2Seconds(g_stream, BASS_ChannelGetPosition(g_stream, BASS_POS_BYTE));
         g_smoothTime = g_musicTime;
         g_lastSysTime = std::chrono::steady_clock::now();
         InvalidateRect(hwnd, nullptr, FALSE);
       }
     }
+    // ============================
+
     bool anyHit = false; for (auto& btn : g_buttons) { if (IsPointInRect(ptDip, btn.rect)) { btn.isDown = true; anyHit = true; } }
+    // 注意：如果上面已经 SetCapture 了，这里就不需要重复 SetCapture，
+    // 但为了逻辑简单，保留原样即可，SetCapture 可以多次调用。
     if (anyHit) { SetCapture(hwnd); InvalidateRect(hwnd, nullptr, FALSE); }
     return 0;
   }
@@ -764,6 +788,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
   {
     POINT ptPixel = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
     D2D1_POINT_2F ptDip = DpiHelper::PixelsToDips(ptPixel, g_renderTarget);
+
+    if (g_isDragging) {
+      g_isDragging = false;
+      ReleaseCapture(); // 释放鼠标捕获
+
+      // 如果拖拽前是播放的，现在就恢复播放
+      if (g_wasPlayingBeforeDrag) {
+        BASS_ChannelPlay(g_stream, FALSE);
+        g_isPlaying = true;
+        g_buttons[1].text = L"\uE769"; // 确保图标是暂停态
+      }
+      else {
+        // 如果本来就是暂停的，拖完还是暂停，图标保持播放态
+        g_isPlaying = false;
+        g_buttons[1].text = L"\uE768";
+      }
+
+      InvalidateRect(hwnd, nullptr, FALSE);
+      return 0; // 既然是处理拖拽，就不用处理下面的按钮点击了
+    }
 
     // 播放列表点击逻辑
     if (!g_isSimpleMode && !g_showLyrics && !g_playlist.empty() && IsPointInRect(ptDip, g_textBoxRect)) {
@@ -907,14 +951,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
       }
     }
 
-    if (!g_isSimpleMode && IsPointInRect(ptDip, g_progressBarRect) && (wParam & MK_LBUTTON) && g_stream) {
-      float ratio = (ptDip.x - g_progressBarRect.left) / (g_progressBarRect.right - g_progressBarRect.left);
-      if (ratio < 0) ratio = 0; if (ratio > 1) ratio = 1;
-      BASS_ChannelSetPosition(g_stream, (QWORD)(BASS_ChannelGetLength(g_stream, BASS_POS_BYTE) * ratio), BASS_POS_BYTE);
-      g_musicTime = BASS_ChannelBytes2Seconds(g_stream, BASS_ChannelGetPosition(g_stream, BASS_POS_BYTE));
-      g_smoothTime = g_musicTime;
-      g_lastSysTime = std::chrono::steady_clock::now();
-      InvalidateRect(hwnd, nullptr, FALSE);
+    if (g_isDragging && g_stream) {
+      float barWidth = g_progressBarRect.right - g_progressBarRect.left;
+      if (barWidth > 0) { // 增加除零保护
+        float ratio = (ptDip.x - g_progressBarRect.left) / barWidth;
+        if (ratio < 0) ratio = 0; if (ratio > 1) ratio = 1;
+
+        // 只设置位置，不播放！
+        // BASS_ChannelSetPosition 在暂停时会更新 buffer，所以频谱图(OnPaint)会自动读取到新位置的数据
+        BASS_ChannelSetPosition(g_stream, (QWORD)(BASS_ChannelGetLength(g_stream, BASS_POS_BYTE) * ratio), BASS_POS_BYTE);
+
+        g_musicTime = BASS_ChannelBytes2Seconds(g_stream, BASS_ChannelGetPosition(g_stream, BASS_POS_BYTE));
+        g_smoothTime = g_musicTime;
+        g_lastSysTime = std::chrono::steady_clock::now();
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
     }
     bool needRedraw = false; for (auto& btn : g_buttons) { bool h = IsPointInRect(ptDip, btn.rect); if (h != btn.isHover) { btn.isHover = h; needRedraw = true; } }
     if (needRedraw) InvalidateRect(hwnd, nullptr, FALSE);
