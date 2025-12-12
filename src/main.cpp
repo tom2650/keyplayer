@@ -89,6 +89,7 @@
 #define IDM_SET_SPECTRUM_BLIZZARD     3024
 #define IDM_SET_SPECTRUM_WINDOW       3025
 #define IDM_SET_SPECTRUM_COLDWAVE     3026
+#define IDM_SET_SPECTRUM_WORMHOLE     3027
 
 #define IDT_TIMER_PLAYCHECK           1 
 #define IDT_TIMER_UI                  2
@@ -105,7 +106,7 @@ enum SpectrumMode {
   SPEC_LED = 12, SPEC_RAIN = 13, SPEC_NET = 14, SPEC_GRAVITY = 15,
   SPEC_SYNTHWAVE = 16, SPEC_SYMBIOTE = 17, SPEC_VINYL = 18, SPEC_SPIRAL = 19,
   SPEC_WARP = 20, SPEC_PLANET = 21, SPEC_GRIND = 22, SPEC_SPHERE = 23,
-  SPEC_BLIZZARD = 24, SPEC_WINDOW = 25, SPEC_COLDWAVE = 26
+  SPEC_BLIZZARD = 24, SPEC_WINDOW = 25, SPEC_COLDWAVE = 26, SPEC_WORMHOLE = 27
 };
 
 struct LyricEntry {
@@ -158,7 +159,8 @@ struct Star3D { float x, y, z; float baseRadius; bool isExploding; float vx, vy,
 struct BlizzardParticle { float x, y; float vx, vy; float z; float life; };
 // --- 寒流来袭结构体 ---
 struct TurbulenceParticle { float x, y, z; float rotation; float rotSpeed; float baseSize; float driftOffset; D2D1_COLOR_F color; };
-
+// --- 时空虫洞结构体 ---
+struct WormholeStar { float x, y, z; float prevZ; float speedMult; D2D1_COLOR_F color; };
 
 // ============================================================================
 // 辅助工具类
@@ -359,7 +361,9 @@ std::vector<BlizzardParticle> g_snowParticles;
 bool g_blizzardInit = false;
 // --- 寒流来袭 ---
 std::vector<TurbulenceParticle> g_turbulenceParticles;
-
+// --- 时空虫洞 ---
+std::vector<WormholeStar> g_wormholeStars;
+bool g_wormholeInit = false;
 
 // ============================================================================
 // 函数声明
@@ -576,6 +580,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case IDM_SET_SPECTRUM_BLIZZARD: g_spectrumMode = SPEC_BLIZZARD; g_blizzardInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_SPECTRUM_WINDOW: g_spectrumMode = SPEC_WINDOW; g_blizzardInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_SPECTRUM_COLDWAVE: g_spectrumMode = SPEC_COLDWAVE; g_turbulenceParticles.clear(); InvalidateRect(hwnd, nullptr, FALSE); break;
+    case IDM_SET_SPECTRUM_WORMHOLE: g_spectrumMode = SPEC_WORMHOLE; g_wormholeInit = false; InvalidateRect(hwnd, nullptr, FALSE); break;
     
     case IDM_SET_THEME: g_isDarkMode = !g_isDarkMode; UpdateTitleBarTheme(hwnd); InvalidateRect(hwnd, nullptr, FALSE); break;
     case IDM_SET_LYRICS: g_showLyrics = !g_showLyrics; if (g_showLyrics) { if (!g_currentFilePath.empty()) LoadAndParseLyrics(g_currentFilePath); else { g_lyricsData.clear(); g_lyricsDisplayStr = L"暂无正在播放的歌曲"; } } InvalidateRect(hwnd, nullptr, FALSE); break;
@@ -702,8 +707,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     else if (wParam == 'V') {
       // 1. 计算下一个模式的索引
       int nextMode = g_spectrumMode + 1;
-      // 枚举里最后一个是 SPEC_COLDWAVE (值是26)，如果超过它，就回到 SPEC_NONE (0)
-      if (nextMode > SPEC_COLDWAVE) nextMode = SPEC_NONE;
+      // 枚举里最后一个是 SPEC_WORMHOLE (值是27)，如果超过它，就回到 SPEC_NONE (0)
+      if (nextMode > SPEC_WORMHOLE) nextMode = SPEC_NONE;
 
       // 2. 计算对应的菜单 ID
       // IDM_SET_COVER 是 3000，IDM_SET_SPECTRUM_BAR 是 3001...
@@ -922,9 +927,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AddSpecItem(IDM_SET_SPECTRUM_BLIZZARD, L"极地风暴");
             AddSpecItem(IDM_SET_SPECTRUM_WINDOW, L"静谧雪窗");
             AddSpecItem(IDM_SET_SPECTRUM_COLDWAVE, L"寒流来袭");
+            AddSpecItem(IDM_SET_SPECTRUM_WORMHOLE, L"时空虫洞");
 
             int checkedSpecId = IDM_SET_COVER + g_spectrumMode;
-            CheckMenuRadioItem(hSubMenuSpec, IDM_SET_COVER, IDM_SET_SPECTRUM_COLDWAVE, checkedSpecId, MF_BYCOMMAND);
+            CheckMenuRadioItem(hSubMenuSpec, IDM_SET_COVER, IDM_SET_SPECTRUM_WORMHOLE, checkedSpecId, MF_BYCOMMAND);
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hSubMenuSpec, L"视觉效果");
             AppendMenuW(hMenu, MF_STRING, IDM_SET_LYRICS, g_showLyrics ? L"显示列表" : L"显示歌词");
             AppendMenuW(hMenu, MF_STRING, IDM_SET_SIMPLEMODE, g_isSimpleMode ? L"标准视图" : L"极简视图");
@@ -1288,6 +1294,9 @@ void PlayTrackByIndex(int index, bool startPlaying) {
 
     // 播放控制
     if (startPlaying) {
+      // 切歌时，如果之前处于暂停状态(有快照)，必须销毁快照，
+      // 否则画面会一直停留在上一首的暂停画面，不会动。
+      SafeRelease(&g_snapshotBitmap);
       BASS_ChannelPlay(g_stream, FALSE);
       g_isPlaying = true;
       g_buttons[1].text = L"\uE769"; // 暂停图标
@@ -1436,6 +1445,8 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
   // ！！！请把原本 OnPaint 里，if (g_spectrumMode == SPEC_BAR) 开始
   // 到所有特效结束的整个代码块剪切到这里！！！
   // ***************************************************************
+  
+  // 9527
   // --- 经典长条 (SPEC_BAR) ---
   if (g_spectrumMode == SPEC_BAR) {
     // 物理下落系统 (保持不变)
@@ -4539,7 +4550,171 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
     pRT->SetTransform(D2D1::Matrix3x2F::Identity());
   }
 
-  // --- 暴雪穿梭 (Snowstorm) ---
+  // --- 时空虫洞 (SPEC_WORMHOLE) ---
+  else if (g_spectrumMode == SPEC_WORMHOLE) {
+
+    struct Point3D { float x, y, z; };
+    // 使用 double 防止长时间运行后的精度丢失抖动
+    static double s_cameraZ = 0.0;
+
+    // 1. 路径函数 (内部使用 double 计算)
+    auto GetPathPos = [](double z) -> Point3D {
+      // 频率极低，保证平滑
+      double px = sin(z * 0.0001) * 4000.0;
+      double py = cos(z * 0.00015) * 1000.0;
+      return { (float)px, (float)py, (float)z };
+      };
+
+    // 2. 初始化
+    if (g_wormholeStars.size() != 4000) {
+      g_wormholeStars.resize(4000);
+      for (int i = 0; i < 4000; i++) {
+        double worldZ = (double)(rand() % 10000);
+        Point3D center = GetPathPos(worldZ);
+
+        float angle = (rand() % 360) * 3.14159f / 180.0f;
+        // 填充视野
+        float radius = (float)(rand() % 3500) + 200.0f;
+
+        g_wormholeStars[i].x = center.x + cos(angle) * radius;
+        g_wormholeStars[i].y = center.y + sin(angle) * radius;
+        g_wormholeStars[i].z = (float)worldZ;
+
+        float h = 0.6f + (rand() % 20) / 100.0f;
+        g_wormholeStars[i].color = HsvToRgb(h, 0.4f, 1.0f);
+        if (rand() % 10 == 0) g_wormholeStars[i].color = D2D1::ColorF(1, 1, 1);
+      }
+    }
+
+    // 3. 背景
+    g_brush->SetColor(D2D1::ColorF(0x000000));
+    pRT->FillRectangle(rect, g_brush);
+
+    // 4. 摄像机推进
+    float bass = (fft[1] + fft[2] + fft[3]) * 5.0f;
+    if (bass > 2.0f) bass = 2.0f;
+
+    // 速度
+    double speed = 50.0 + bass * 150.0;
+    s_cameraZ += speed;
+
+    // --- 防止无限远导致的精度抖动 ---
+    // 这是一个巨大的周期 (约 62万)，重置 Z 不会影响画面连续性
+    if (s_cameraZ > 628300.0) {
+      s_cameraZ -= 628300.0;
+      // 同时把所有星星拉回来
+      for (auto& s : g_wormholeStars) s.z -= 628300.0f;
+    }
+
+    // --- 核心稳定算法 ---
+
+    // 获取摄像机位置
+    Point3D camPos = GetPathPos(s_cameraZ);
+
+    // [修复点]：增加 LookAhead 到 20.0，消除微小浮点误差带来的震颤
+    Point3D target = GetPathPos(s_cameraZ + 20.0);
+
+    // 计算 Forward 向量 (Z轴方向)
+    float fx = target.x - camPos.x;
+    float fy = target.y - camPos.y;
+    float fz = target.z - camPos.z;
+    // 归一化
+    float lenF = sqrt(fx * fx + fy * fy + fz * fz);
+    fx /= lenF; fy /= lenF; fz /= lenF;
+
+    // 计算压弯 (Roll) - 使用更远的预测点来平滑倾斜
+    Point3D future = GetPathPos(s_cameraZ + 800.0);
+    // 使用相对于摄像机的偏移来计算倾斜，更稳定
+    float futureDx = future.x - camPos.x;
+    float tilt = futureDx * 0.0003f;
+
+    // 构建 Up 向量 (带倾斜)
+    float upX = -tilt;
+    float upY = 1.0f;
+    float upZ = 0.0f;
+
+    // 计算 Right 向量 = Up x Forward
+    float rx = upY * fz - upZ * fy;
+    float ry = upZ * fx - upX * fz;
+    float rz = upX * fy - upY * fx;
+    float lenR = sqrt(rx * rx + ry * ry + rz * rz);
+    rx /= lenR; ry /= lenR; rz /= lenR;
+
+    // 重新校准 Up 向量 = Forward x Right
+    float ux = fy * rz - fz * ry;
+    float uy = fz * rx - fx * rz;
+    float uz = fx * ry - fy * rx;
+
+    float cx = (rect.left + rect.right) / 2.0f;
+    float cy_scr = (rect.top + rect.bottom) / 2.0f;
+    float drawDist = 10000.0f;
+    float fov = 800.0f;
+
+    // 5. 遍历绘制
+    for (int i = 0; i < 4000; i++) {
+      auto& s = g_wormholeStars[i];
+
+      float relX = s.x - camPos.x;
+      float relY = s.y - camPos.y;
+      float relZ = s.z - (float)s_cameraZ;
+
+      // --- 循环再生：基于投影前方判断 ---
+      // 使用点积判断星星是否在摄像机平面的后面
+      float dotVal = relX * fx + relY * fy + relZ * fz;
+
+      if (dotVal < 5.0f) { // 在身后
+        s.z += drawDist;
+
+        Point3D newCenter = GetPathPos((double)s.z);
+        float angle = (rand() % 360) * 3.14159f / 180.0f;
+        float radius = (float)(rand() % 3000) + 200.0f;
+
+        s.x = newCenter.x + cos(angle) * radius;
+        s.y = newCenter.y + sin(angle) * radius;
+
+        // 更新本帧坐标
+        relX = s.x - camPos.x;
+        relY = s.y - camPos.y;
+        relZ = s.z - (float)s_cameraZ;
+      }
+
+      // 距离剔除
+      if (relZ > drawDist || relZ < -100.0f) continue;
+
+      // --- 基向量变换 (World -> View) ---
+      float viewX = relX * rx + relY * ry + relZ * rz;
+      float viewY = relX * ux + relY * uy + relZ * uz;
+      float viewZ = relX * fx + relY * fy + relZ * fz;
+
+      if (viewZ < 1.0f) continue;
+
+      // --- 投影 ---
+      float factor = fov / viewZ;
+      float screenX = cx + viewX * factor;
+      float screenY = cy_scr + viewY * factor;
+
+      if (screenX < rect.left || screenX > rect.right ||
+        screenY < rect.top || screenY > rect.bottom) continue;
+
+      // --- 绘制 ---
+      float alpha = 1.0f - (viewZ / drawDist);
+      alpha = alpha * alpha;
+
+      g_brush->SetColor(s.color);
+      g_brush->SetOpacity(alpha);
+
+      float size = (1.0f - viewZ / drawDist) * 3.5f;
+      if (size < 1.2f) size = 1.2f;
+      if (bass > 0.8f) size *= 1.5f;
+
+      pRT->FillEllipse(
+        D2D1::Ellipse(D2D1::Point2F(screenX, screenY), size / 2, size / 2),
+        g_brush);
+    }
+    g_brush->SetOpacity(1.0f);
+  }
+
+  // --- 其他频谱 (...) ---
   // ---------------------------------------------------------9527
 }
 
