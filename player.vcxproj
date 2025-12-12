@@ -78,7 +78,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)build\bin\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)build\$(Configuration)\</IntDir>
-    <TargetName>KeyPlayer</TargetName>
+    <TargetName>keyplayer</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
