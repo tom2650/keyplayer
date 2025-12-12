@@ -3,6 +3,10 @@
 一个基于 C++ 和 Direct2D 的轻量级 Windows 本地音频播放器。
 核心音频引擎采用 [Un4seen BASS Library](https://www.un4seen.com/)。
 
+| 主界面                                                       | 深色主题                                                   |
+| ------------------------------------------------------------ | ---------------------------------------------------------- |
+| <img src="docs/images/screenshot-main.png" alt="KeyPlayer Screenshot" style="zoom:50%;" /> | <img src="docs/images/dark_theme.png" style="zoom:50%;" /> |
+
 ## ✨ 功能特性 (Features)
 
 *   🎧 **高保真播放**：基于 BASS 库，支持 MP3, WAV, FLAC, OGG 等常见格式。
