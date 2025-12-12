@@ -4874,10 +4874,44 @@ void OnPaint()
         // 只有当：存在快照 且 没有拖动 时，才画快照（定格画面）
         // 否则（播放中、或者拖动中），都进行实时绘制
         if (g_snapshotBitmap && !g_isDragging) {
-          // 全屏绘制快照 (因为它是一个透明的全屏图层)
-          D2D1_SIZE_F size = g_renderTarget->GetSize();
-          D2D1_RECT_F fullScreen = D2D1::RectF(0, 0, size.width, size.height);
-          g_renderTarget->DrawBitmap(g_snapshotBitmap, fullScreen);
+
+          // 获取当前窗口(画布)大小
+          D2D1_SIZE_F rtSize = g_renderTarget->GetSize();
+          // 获取快照(旧图片)大小
+          D2D1_SIZE_F bmpSize = g_snapshotBitmap->GetSize();
+
+          // 1. 如果是从 极简 -> 标准 (小图贴大框)
+          //    此时 bmpSize.width < rtSize.width
+          //    我们要先清空背景(补全透明/黑色)，然后把图贴在左边
+          if (rtSize.width > bmpSize.width) {
+            // 清空背景 (填充黑色或主题色，防止右边花屏)
+            g_renderTarget->Clear(D2D1::ColorF(0x000000));
+          }
+
+          // 2. 计算绘制区域 (核心逻辑)
+          // 我们始终以左上角 (0,0) 对齐
+
+          // 我们要画多大？取两者中较小的那个尺寸
+          // 如果是大图变小框，就只画框那么大 (裁切)
+          // 如果是小图变大框，就只画图那么大 (留白)
+          float drawW = std::min(rtSize.width, bmpSize.width);
+          float drawH = std::min(rtSize.height, bmpSize.height);
+
+          // 源矩形 (从快照里切哪一块)：取左上角区域
+          D2D1_RECT_F sourceRect = D2D1::RectF(0, 0, drawW, drawH);
+
+          // 目标矩形 (画在屏幕哪里)：画在左上角
+          D2D1_RECT_F destRect = D2D1::RectF(0, 0, drawW, drawH);
+
+          // 执行绘制
+          // 注意最后两个参数：destRect 和 sourceRect
+          g_renderTarget->DrawBitmap(
+            g_snapshotBitmap,
+            destRect,
+            1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, // 使用邻近插值，防止边缘模糊
+            &sourceRect
+          );
         }
         else {
           // 实时绘制：调用刚刚提取出来的函数
