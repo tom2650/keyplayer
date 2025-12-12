@@ -1553,28 +1553,41 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
 
     float radius = minDim * 0.35f;
 
-    // 1. 深空背景 (绘制在框内)
+    // 1. 深空背景
     g_brush->SetColor(D2D1::ColorF(0x020205));
     pRT->FillRectangle(rect, g_brush);
 
-    // 2. 计算整体冲量 (Impulse)
+    // 2. 计算整体冲量
     float bass = (fft[1] + fft[2] + fft[3]) / 3.0f;
     float mid = (fft[10] + fft[11] + fft[12]) / 3.0f;
 
-    // 冲量 = 低音(动力) + 中音(细节)
+    // 冲量 = 低音 + 中音
     float impulse = bass * 1.5f + mid * 0.5f;
+
+    // === [修复 1]：增加安全限制 ===
+    // 防止切歌瞬间的爆音导致数值变成无穷大或极大值
+    if (impulse > 5.0f) impulse = 5.0f;
 
     // --- 3. 核心：协调旋转速度 ---
     float rotSpeed = 1.5f + impulse * 15.0f;
 
     g_circleRotation += rotSpeed;
-    if (g_circleRotation > 360.0f) g_circleRotation -= 360.0f;
 
-    // --- 4. 发射逻辑 (切线向后) ---
+    // === [修复 2]：使用 fmod 防止浮点数精度丢失 ===
+    // 之前的 `if (g > 360) g -= 360` 在 rotSpeed 极大时会失效
+    // fmod 保证角度永远在 0~360 之间，解决"环停止转动"和"单向喷射"的 Bug
+    if (g_circleRotation >= 360.0f) {
+      g_circleRotation = fmod(g_circleRotation, 360.0f);
+    }
+
+    // --- 4. 发射逻辑 ---
     int samples = 60;
     for (int i = 0; i < samples; i++) {
       int fftIdx = (i * 2) % 100;
       float energy = fft[fftIdx] * 8.0f;
+
+      // 限制能量上限，防止粒子过大
+      if (energy > 5.0f) energy = 5.0f;
 
       if (energy > 0.2f) {
         float angleDeg = (float)i / samples * 360.0f + g_circleRotation;
@@ -1591,13 +1604,13 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
         p.x = spawnX;
         p.y = spawnY;
 
-        // 粒子速度与能量挂钩
+        // 粒子速度
         float pSpeed = 2.0f + energy * 8.0f;
 
         p.vx = tanVx * pSpeed;
         p.vy = tanVy * pSpeed;
 
-        // 添加一点离心力 (向外飘)
+        // 离心力
         p.vx += cos(rad) * 2.0f;
         p.vy += sin(rad) * 2.0f;
 
@@ -1614,7 +1627,6 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
     }
 
     // --- 5. 更新并绘制粒子 ---
-
     auto it = g_accelParticles.begin();
     while (it != g_accelParticles.end()) {
       it->x += it->vx;
@@ -1623,7 +1635,7 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
       it->vy *= 0.95f;
       it->life -= 0.015f;
 
-      // 增加边界检测 (上下左右各放宽 50px)
+      // 边界检测
       bool outOfBounds = (it->x < rect.left - 50.0f ||
         it->x > rect.right + 50.0f ||
         it->y < rect.top - 50.0f ||
@@ -1638,7 +1650,7 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
 
         float speed = sqrt(it->vx * it->vx + it->vy * it->vy);
         if (speed > 3.0f) {
-          // 高速时画长拖尾
+          // 高速拖尾
           D2D1_POINT_2F p1 = D2D1::Point2F(it->x, it->y);
           D2D1_POINT_2F p2 = D2D1::Point2F(it->x - it->vx * 0.5f, it->y - it->vy * 0.5f);
           pRT->DrawLine(p1, p2, g_brush, it->size);
@@ -1651,7 +1663,6 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
     }
 
     // --- 6. 绘制主环 ---
-
     float currentR = radius + impulse * 8.0f;
 
     // 1. 发光晕
@@ -1664,14 +1675,14 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
     g_brush->SetOpacity(0.9f);
     pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), currentR, currentR), g_brush, 2.0f);
 
-    // 3. 机械卡扣 (随环旋转)
+    // 3. 机械卡扣
+    // 注意：这里用 g_circleRotation，因为已经 fmod 过了，所以这里的矩阵变换也是安全的
     D2D1::Matrix3x2F rotM = D2D1::Matrix3x2F::Rotation(g_circleRotation, D2D1::Point2F(cx, cy));
     pRT->SetTransform(rotM);
 
     g_brush->SetColor(D2D1::ColorF(D2D1::ColorF::DeepSkyBlue));
     g_brush->SetOpacity(0.8f);
 
-    // 画三个连接点
     for (int i = 0; i < 3; i++) {
       float angle = i * 120.0f * 3.14159f / 180.0f;
       float px = cx + cos(angle) * currentR;
@@ -1680,7 +1691,6 @@ void DrawAllSpectrumEffects(ID2D1RenderTarget* pRT, D2D1_RECT_F rect) {
     }
 
     pRT->SetTransform(D2D1::Matrix3x2F::Identity());
-
     g_brush->SetOpacity(1.0f);
   }
 
