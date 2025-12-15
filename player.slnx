@@ -1,0 +1,9 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="player.vcxproj" Id="9d176e43-6503-421e-8621-3b6a30083093">
+    <BuildType Solution="Debug|x64" Project="Release" />
+  </Project>
+</Solution>

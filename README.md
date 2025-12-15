@@ -17,7 +17,7 @@
 ## 🛠️ 开发环境 (Requirements)
 
 *   **OS**: Windows 10 / 11
-*   **IDE**: Visual Studio 2022 (推荐)
+*   **IDE**: Visual Studio 2026 (推荐)
 *   **Language**: C++14 或更高
 *   **Dependencies**:
     *   BASS Audio Library (包含在 `vendor/` 目录中)
